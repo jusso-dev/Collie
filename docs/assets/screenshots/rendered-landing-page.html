@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="en-AU"><head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Harbour Parcel delivery preferences</title>
+    <style>
+      body { margin:0; font-family:Inter, Arial, sans-serif; background:#f3f6fa; color:#0d1b2a; }
+      .topbar { height:5px; background:#f26a21; }
+      main { min-height:calc(100vh - 5px); display:grid; place-items:center; padding:40px 20px; }
+      .panel { width:min(440px, 100%); background:#fcfdff; border:1px solid rgba(100,116,139,.26); border-radius:10px; padding:28px; box-shadow:0 22px 70px rgba(13,27,42,.14); }
+      .brand { display:flex; align-items:center; gap:12px; margin-bottom:22px; }
+      .brand-mark { width:42px; height:42px; display:grid; place-items:center; border-radius:9px; background:#f26a21; color:#fff; font-weight:800; }
+      .brand-logo { width:42px; height:42px; object-fit:contain; border-radius:9px; border:1px solid rgba(100,116,139,.2); background:#fff; }
+      h1 { font-size:24px; line-height:1.2; margin:0 0 10px; }
+      p { color:#64748b; line-height:1.6; margin:0 0 18px; }
+      label { display:block; font-size:13px; font-weight:700; margin-top:14px; }
+      input { width:100%; box-sizing:border-box; margin-top:7px; border:1px solid rgba(100,116,139,.34); border-radius:7px; padding:11px; font-size:15px; }
+      button { margin-top:20px; width:100%; border:0; border-radius:7px; padding:12px; background:#f26a21; color:#fcfdff; font-weight:800; }
+      .hint { margin-top:18px; font-size:12px; }
+    </style>
+  </head>
+  <body>
+    <div class="topbar"></div>
+    <main>
+      <section class="panel">
+        <div class="brand"><div class="brand-mark">HP</div><strong>Harbour Parcel</strong></div>
+        <h1>Confirm delivery preference</h1>
+        <p>Sign in to choose a safe delivery time for mia.chen@example.test.</p>
+        <form method="post">
+          <label for="email">Email address</label>
+          <input id="email" name="email" type="email" value="mia.chen@example.test" style="">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" style="">
+          <button type="submit">Continue</button>
+        </form>
+        <p class="hint">Collie records that a password was provided, not the password value.</p>
+      </section>
+    </main>
+  
+</body></html>

@@ -1,0 +1,2 @@
+ALTER TABLE "campaign_targets" ADD COLUMN "scheduled_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "campaigns" ADD COLUMN "schedule_cron" text;

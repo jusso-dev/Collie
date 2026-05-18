@@ -1,0 +1,433 @@
+import { relations, sql } from "drizzle-orm";
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+export const userRole = pgEnum("user_role", ["owner", "admin", "viewer"]);
+export const invitationStatus = pgEnum("invitation_status", ["pending", "accepted", "cancelled", "expired"]);
+export const dataRegion = pgEnum("data_region", ["au", "us", "eu"]);
+export const plan = pgEnum("plan", ["trial", "starter", "growth", "enterprise"]);
+export const templateCategory = pgEnum("template_category", [
+  "credential_harvest",
+  "invoice_fraud",
+  "ceo_impersonation",
+  "qr_code",
+  "callback",
+  "package_delivery",
+  "tax",
+  "telecom",
+  "document_share",
+]);
+export const landingPageType = pgEnum("landing_page_type", [
+  "credential_harvest",
+  "attachment_warning",
+  "training_redirect",
+  "friendly_simulation",
+]);
+export const campaignStatus = pgEnum("campaign_status", [
+  "draft",
+  "scheduled",
+  "running",
+  "completed",
+  "cancelled",
+  "paused",
+]);
+export const sendStrategy = pgEnum("send_strategy", [
+  "immediate",
+  "drip",
+  "randomised_over_window",
+]);
+export const eventType = pgEnum("event_type", [
+  "sent",
+  "opened",
+  "clicked",
+  "submitted",
+  "reported",
+  "trained",
+  "bounced",
+  "complained",
+]);
+export const trainingContentType = pgEnum("training_content_type", [
+  "video",
+  "interactive",
+  "article",
+]);
+export const assignmentSource = pgEnum("assignment_source", [
+  "just_in_time",
+  "scheduled",
+  "manual",
+]);
+
+const timestamps = {
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+};
+
+export const organisations = pgTable(
+  "organisations",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    industry: text("industry"),
+    employeeCountBand: text("employee_count_band"),
+    plan: plan("plan").default("trial").notNull(),
+    dataRegion: dataRegion("data_region").default("au").notNull(),
+    resendApiKeyEncrypted: text("resend_api_key_encrypted"),
+    senderFromAddress: text("sender_from_address"),
+    ...timestamps,
+  },
+  (table) => [uniqueIndex("organisations_slug_idx").on(table.slug)],
+);
+
+export const users = pgTable(
+  "users",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id").references(() => organisations.id, {
+      onDelete: "set null",
+    }),
+    name: text("name").notNull(),
+    email: text("email").notNull(),
+    emailVerified: boolean("email_verified").default(false).notNull(),
+    image: text("image"),
+    role: userRole("role").default("owner").notNull(),
+    active: boolean("active").default(true).notNull(),
+    mfaRequired: boolean("mfa_required").default(false).notNull(),
+    mfaEnabled: boolean("mfa_enabled").default(false).notNull(),
+    mfaResetAt: timestamp("mfa_reset_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("users_email_idx").on(table.email),
+    index("users_organisation_id_idx").on(table.organisationId),
+  ],
+);
+
+export const organisationInvitations = pgTable(
+  "organisation_invitations",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: userRole("role").default("admin").notNull(),
+    token: text("token").notNull(),
+    status: invitationStatus("status").default("pending").notNull(),
+    invitedBy: text("invited_by").references(() => users.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("organisation_invitations_token_idx").on(table.token),
+    index("organisation_invitations_org_idx").on(table.organisationId),
+    index("organisation_invitations_email_idx").on(table.email),
+  ],
+);
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    token: text("token").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+  },
+  (table) => [uniqueIndex("sessions_token_idx").on(table.token), index("sessions_user_id_idx").on(table.userId)],
+);
+
+export const accounts = pgTable(
+  "accounts",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", { withTimezone: true }),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("accounts_user_id_idx").on(table.userId)],
+);
+
+export const verifications = pgTable(
+  "verifications",
+  {
+    id: text("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("verifications_identifier_idx").on(table.identifier)],
+);
+
+export const employees = pgTable(
+  "employees",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    firstName: text("first_name").notNull(),
+    lastName: text("last_name").notNull(),
+    department: text("department"),
+    managerEmail: text("manager_email"),
+    language: text("language").default("en-AU").notNull(),
+    timezone: text("timezone").default("Australia/Sydney").notNull(),
+    riskScore: integer("risk_score").default(50).notNull(),
+    lastTrainedAt: timestamp("last_trained_at", { withTimezone: true }),
+    active: boolean("active").default(true).notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("employees_org_email_idx").on(table.organisationId, table.email),
+    index("employees_org_idx").on(table.organisationId),
+  ],
+);
+
+export const groups = pgTable(
+  "groups",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    ...timestamps,
+  },
+  (table) => [uniqueIndex("groups_org_name_idx").on(table.organisationId, table.name)],
+);
+
+export const employeeGroups = pgTable(
+  "employee_groups",
+  {
+    employeeId: text("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.employeeId, table.groupId] })],
+);
+
+export const trainingModules = pgTable(
+  "training_modules",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id").references(() => organisations.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description").notNull(),
+    durationSeconds: integer("duration_seconds").notNull(),
+    contentType: trainingContentType("content_type").notNull(),
+    contentUrl: text("content_url"),
+    contentHtml: text("content_html"),
+    topic: text("topic").notNull(),
+    language: text("language").default("en-AU").notNull(),
+    quiz: jsonb("quiz").$type<Array<{ question: string; options: string[]; answer: number }>>().default([]),
+    ...timestamps,
+  },
+  (table) => [index("training_modules_org_idx").on(table.organisationId)],
+);
+
+export const emailTemplates = pgTable(
+  "email_templates",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id").references(() => organisations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    category: templateCategory("category").notNull(),
+    difficulty: integer("difficulty").notNull(),
+    subject: text("subject").notNull(),
+    fromName: text("from_name").notNull(),
+    fromEmailPattern: text("from_email_pattern").notNull(),
+    htmlBody: text("html_body").notNull(),
+    textBody: text("text_body").notNull(),
+    language: text("language").default("en-AU").notNull(),
+    region: text("region").default("au").notNull(),
+    linkedTrainingModuleId: text("linked_training_module_id").references(() => trainingModules.id, {
+      onDelete: "set null",
+    }),
+    ...timestamps,
+  },
+  (table) => [index("email_templates_org_idx").on(table.organisationId)],
+);
+
+export const landingPages = pgTable(
+  "landing_pages",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id").references(() => organisations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    type: landingPageType("type").notNull(),
+    html: text("html").notNull(),
+    linkedTrainingModuleId: text("linked_training_module_id").references(() => trainingModules.id, {
+      onDelete: "set null",
+    }),
+    ...timestamps,
+  },
+  (table) => [index("landing_pages_org_idx").on(table.organisationId)],
+);
+
+export const campaigns = pgTable(
+  "campaigns",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    status: campaignStatus("status").default("draft").notNull(),
+    emailTemplateId: text("email_template_id").references(() => emailTemplates.id, { onDelete: "set null" }),
+    landingPageId: text("landing_page_id").references(() => landingPages.id, { onDelete: "set null" }),
+    targetGroupIds: text("target_group_ids").array().default(sql`ARRAY[]::text[]`).notNull(),
+    sendStrategy: sendStrategy("send_strategy").default("immediate").notNull(),
+    startAt: timestamp("start_at", { withTimezone: true }),
+    endAt: timestamp("end_at", { withTimezone: true }),
+    scheduleCron: text("schedule_cron"),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+    ...timestamps,
+  },
+  (table) => [index("campaigns_org_idx").on(table.organisationId)],
+);
+
+export const campaignTargets = pgTable(
+  "campaign_targets",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    campaignId: text("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "cascade" }),
+    employeeId: text("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    uniqueToken: text("unique_token").notNull(),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    openedAt: timestamp("opened_at", { withTimezone: true }),
+    clickedAt: timestamp("clicked_at", { withTimezone: true }),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    reportedAt: timestamp("reported_at", { withTimezone: true }),
+    trainingCompletedAt: timestamp("training_completed_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("campaign_targets_token_idx").on(table.uniqueToken),
+    uniqueIndex("campaign_targets_campaign_employee_idx").on(table.campaignId, table.employeeId),
+  ],
+);
+
+export const events = pgTable(
+  "events",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    campaignTargetId: text("campaign_target_id")
+      .notNull()
+      .references(() => campaignTargets.id, { onDelete: "cascade" }),
+    eventType: eventType("event_type").notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("events_target_idx").on(table.campaignTargetId), index("events_type_idx").on(table.eventType)],
+);
+
+export const trainingAssignments = pgTable(
+  "training_assignments",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    employeeId: text("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    trainingModuleId: text("training_module_id")
+      .notNull()
+      .references(() => trainingModules.id, { onDelete: "cascade" }),
+    assignedVia: assignmentSource("assigned_via").notNull(),
+    assignedAt: timestamp("assigned_at", { withTimezone: true }).defaultNow().notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    quizScore: integer("quiz_score"),
+  },
+  (table) => [index("training_assignments_employee_idx").on(table.employeeId)],
+);
+
+export const riskScoreHistory = pgTable(
+  "risk_score_history",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    employeeId: text("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    score: integer("score").notNull(),
+    calculatedAt: timestamp("calculated_at", { withTimezone: true }).defaultNow().notNull(),
+    factors: jsonb("factors").$type<Record<string, number | string>>().notNull(),
+  },
+  (table) => [index("risk_score_history_employee_idx").on(table.employeeId)],
+);
+
+export const organisationsRelations = relations(organisations, ({ many }) => ({
+  users: many(users),
+  employees: many(employees),
+  groups: many(groups),
+  campaigns: many(campaigns),
+  invitations: many(organisationInvitations),
+}));
+
+export const usersRelations = relations(users, ({ one }) => ({
+  organisation: one(organisations, {
+    fields: [users.organisationId],
+    references: [organisations.id],
+  }),
+}));
+
+export const organisationInvitationsRelations = relations(organisationInvitations, ({ one }) => ({
+  organisation: one(organisations, {
+    fields: [organisationInvitations.organisationId],
+    references: [organisations.id],
+  }),
+  inviter: one(users, {
+    fields: [organisationInvitations.invitedBy],
+    references: [users.id],
+  }),
+}));
+
+export const employeesRelations = relations(employees, ({ one, many }) => ({
+  organisation: one(organisations, {
+    fields: [employees.organisationId],
+    references: [organisations.id],
+  }),
+  memberships: many(employeeGroups),
+  campaignTargets: many(campaignTargets),
+  trainingAssignments: many(trainingAssignments),
+}));
