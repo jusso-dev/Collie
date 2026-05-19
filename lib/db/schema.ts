@@ -68,6 +68,12 @@ export const assignmentSource = pgEnum("assignment_source", [
 ]);
 export const sendingTransport = pgEnum("sending_transport", ["resend", "smtp"]);
 export const ssoKind = pgEnum("sso_kind", ["oidc", "saml"]);
+export const exclusionRuleKind = pgEnum("exclusion_rule_kind", [
+  "group",
+  "new_hire_days",
+  "role",
+  "tag",
+]);
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -373,10 +379,36 @@ export const campaigns = pgTable(
     workingDays: integer("working_days").array().default(sql`ARRAY[1,2,3,4,5]::integer[]`).notNull(),
     respectEmployeeTimezone: boolean("respect_employee_timezone").default(true).notNull(),
     cooldownDays: integer("cooldown_days").default(0).notNull(),
+    appliedExclusionRuleIds: text("applied_exclusion_rule_ids")
+      .array()
+      .default(sql`ARRAY[]::text[]`)
+      .notNull(),
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     ...timestamps,
   },
   (table) => [index("campaigns_org_idx").on(table.organisationId)],
+);
+
+export type ExclusionRuleParameters =
+  | { groupId: string }
+  | { days: number; sinceField: "createdAt" }
+  | { values: string[] }
+  | Record<string, unknown>;
+
+export const exclusionRules = pgTable(
+  "exclusion_rules",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    kind: exclusionRuleKind("kind").notNull(),
+    parameters: jsonb("parameters").$type<ExclusionRuleParameters>().default({}).notNull(),
+    active: boolean("active").default(true).notNull(),
+    ...timestamps,
+  },
+  (table) => [index("exclusion_rules_org_idx").on(table.organisationId)],
 );
 
 export const campaignTargets = pgTable(
@@ -502,6 +534,14 @@ export const organisationsRelations = relations(organisations, ({ many }) => ({
   groups: many(groups),
   campaigns: many(campaigns),
   invitations: many(organisationInvitations),
+  exclusionRules: many(exclusionRules),
+}));
+
+export const exclusionRulesRelations = relations(exclusionRules, ({ one }) => ({
+  organisation: one(organisations, {
+    fields: [exclusionRules.organisationId],
+    references: [organisations.id],
+  }),
 }));
 
 export const usersRelations = relations(users, ({ one }) => ({

@@ -11,6 +11,7 @@ import {
   Menu,
   Settings,
   ShieldCheck,
+  ShieldOff,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -36,6 +37,7 @@ const navItems = [
   { label: "Employees", href: "employees", icon: Users },
   { label: "Groups", href: "groups", icon: Users },
   { label: "Campaigns", href: "campaigns", icon: Mail },
+  { label: "Exclusions", href: "exclusions", icon: ShieldOff },
   { label: "Templates", href: "templates", icon: FileText },
   { label: "Landing pages", href: "landing-pages", icon: Flag },
   { label: "Training", href: "training", icon: BookOpen },
