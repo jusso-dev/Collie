@@ -10,6 +10,10 @@ import { sealTotpSecret } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
 import { organisations } from "@/lib/db/schema";
 import {
+  DEFAULT_EVENT_METADATA_RETENTION_DAYS,
+  DEFAULT_EVENT_PII_SCRUB_DAYS,
+} from "@/lib/compliance/event-retention";
+import {
   getTransportForOrganisation,
   renderTestEmailFor,
   TransientSendError,
@@ -19,6 +23,24 @@ import {
 const PASSWORD_PLACEHOLDER = "__keep_existing__";
 
 const transportEnum = z.enum(["resend", "smtp"]);
+
+const complianceRetentionSettingsSchema = z.object({
+  orgSlug: z.string().min(1),
+  auditRetentionDays: z
+    .string()
+    .trim()
+    .optional()
+    .default(String(DEFAULT_EVENT_METADATA_RETENTION_DAYS))
+    .transform((value) => Number(value || DEFAULT_EVENT_METADATA_RETENTION_DAYS))
+    .pipe(z.number().int().min(30).max(2555)),
+  eventPiiScrubDays: z
+    .string()
+    .trim()
+    .optional()
+    .default(String(DEFAULT_EVENT_PII_SCRUB_DAYS))
+    .transform((value) => Number(value || DEFAULT_EVENT_PII_SCRUB_DAYS))
+    .pipe(z.number().int().min(1).max(365)),
+});
 
 const sendingSettingsSchema = z
   .object({
@@ -80,6 +102,52 @@ const sendingSettingsSchema = z
           message: "Enter an SMTP From address.",
         });
       }
+    }
+  });
+
+const lrsSettingsSchema = z
+  .object({
+    orgSlug: z.string().min(1),
+    lrsEnabled: z
+      .string()
+      .optional()
+      .transform((value) => value === "on" || value === "true"),
+    lrsEndpointUrl: z
+      .string()
+      .trim()
+      .optional()
+      .default("")
+      .transform((value) => (value ? value.replace(/\/$/, "") : null)),
+    lrsUsername: z.string().trim().optional().default(""),
+    lrsPassword: z.string().optional().default(""),
+    hasExistingUsername: z
+      .string()
+      .optional()
+      .transform((value) => value === "true"),
+    hasExistingPassword: z
+      .string()
+      .optional()
+      .transform((value) => value === "true"),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.lrsEnabled) return;
+
+    if (!value.lrsEndpointUrl) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lrsEndpointUrl"], message: "Enter an LRS endpoint URL." });
+    } else {
+      try {
+        new URL(value.lrsEndpointUrl);
+      } catch {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lrsEndpointUrl"], message: "Enter a valid LRS endpoint URL." });
+      }
+    }
+
+    if (!value.lrsUsername && !value.hasExistingUsername) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lrsUsername"], message: "Enter an LRS username." });
+    }
+
+    if (!value.lrsPassword && !value.hasExistingPassword) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lrsPassword"], message: "Enter an LRS password." });
     }
   });
 
@@ -154,6 +222,78 @@ export async function saveSendingSettings(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/settings`);
   revalidatePath(`/${data.orgSlug}/campaigns`);
+}
+
+export async function saveComplianceRetentionSettings(formData: FormData) {
+  const data = complianceRetentionSettingsSchema.parse({
+    orgSlug: stringFromForm(formData, "orgSlug"),
+    auditRetentionDays: stringFromForm(formData, "auditRetentionDays"),
+    eventPiiScrubDays: stringFromForm(formData, "eventPiiScrubDays"),
+  });
+  const organisation = await requireOrganisationForSlug(data.orgSlug);
+
+  await db
+    .update(organisations)
+    .set({
+      auditRetentionDays: data.auditRetentionDays,
+      eventPiiScrubDays: data.eventPiiScrubDays,
+      updatedAt: new Date(),
+    })
+    .where(eq(organisations.id, organisation.id));
+
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "settings.save_compliance_retention",
+    resourceType: "organisation",
+    resourceId: organisation.id,
+    metadata: {
+      eventMetadataRetentionDays: data.auditRetentionDays,
+      eventPiiScrubDays: data.eventPiiScrubDays,
+    },
+  });
+
+  revalidatePath(`/${data.orgSlug}/settings`);
+}
+
+export async function saveLrsSettings(formData: FormData) {
+  const data = lrsSettingsSchema.parse({
+    orgSlug: stringFromForm(formData, "orgSlug"),
+    lrsEnabled: stringFromForm(formData, "lrsEnabled"),
+    lrsEndpointUrl: stringFromForm(formData, "lrsEndpointUrl"),
+    lrsUsername: stringFromForm(formData, "lrsUsername"),
+    lrsPassword: rawFromForm(formData, "lrsPassword"),
+    hasExistingUsername: stringFromForm(formData, "hasExistingUsername"),
+    hasExistingPassword: stringFromForm(formData, "hasExistingPassword"),
+  });
+  const organisation = await requireOrganisationForSlug(data.orgSlug);
+
+  const updates: Partial<typeof organisations.$inferInsert> = {
+    lrsEnabled: data.lrsEnabled,
+    lrsEndpointUrl: data.lrsEndpointUrl,
+    updatedAt: new Date(),
+  };
+
+  if (data.lrsUsername) {
+    updates.lrsUsernameEncrypted = sealTotpSecret(data.lrsUsername);
+  }
+
+  if (data.lrsPassword && data.lrsPassword !== PASSWORD_PLACEHOLDER) {
+    updates.lrsPasswordEncrypted = sealTotpSecret(data.lrsPassword);
+  }
+
+  await db.update(organisations).set(updates).where(eq(organisations.id, organisation.id));
+
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "settings.save_lrs",
+    resourceType: "organisation",
+    resourceId: organisation.id,
+    metadata: { lrsEnabled: data.lrsEnabled, lrsEndpointUrl: data.lrsEndpointUrl },
+  });
+
+  revalidatePath(`/${data.orgSlug}/settings`);
 }
 
 const testSendSchema = z.object({
@@ -233,4 +373,3 @@ export async function sendTransportTestEmail(_prevState: TransportTestResult | n
     };
   }
 }
-

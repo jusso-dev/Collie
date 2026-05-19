@@ -34,6 +34,12 @@ import {
   groups,
   landingPages,
 } from "@/lib/db/schema";
+import { issueTrainingCertificateForTarget } from "@/lib/training/certificates";
+import { emitCampaignTargetTrainingCompletion } from "@/lib/training/xapi";
+
+function appUrl() {
+  return (process.env.NEXT_PUBLIC_APP_URL || process.env.BETTER_AUTH_URL || "http://localhost:3000").replace(/\/$/, "");
+}
 
 function parseTimeOfDay(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -523,7 +529,7 @@ export async function markTargetEvent(formData: FormData) {
   }
 
   const [target] = await db
-    .select({ id: campaignTargets.id })
+    .select({ id: campaignTargets.id, employeeId: campaignTargets.employeeId })
     .from(campaignTargets)
     .innerJoin(campaigns, eq(campaigns.id, campaignTargets.campaignId))
     .where(and(eq(campaignTargets.uniqueToken, token), eq(campaigns.organisationId, organisation.id)))
@@ -552,6 +558,24 @@ export async function markTargetEvent(formData: FormData) {
     metadata: { source: "manual_admin" },
     createdAt: now,
   });
+
+  if (eventType === "trained") {
+    await db
+      .update(employees)
+      .set({ lastTrainedAt: now, updatedAt: now })
+      .where(eq(employees.id, target.employeeId));
+    await issueTrainingCertificateForTarget({ campaignTargetId: target.id, completedAt: now });
+
+    try {
+      await emitCampaignTargetTrainingCompletion({
+        campaignTargetId: target.id,
+        activityBaseUrl: appUrl(),
+        metadata: { source: "manual_admin" },
+      });
+    } catch (error) {
+      console.warn("xAPI training completion could not be emitted", error);
+    }
+  }
 
   revalidatePath(`/${orgSlug}/campaigns`);
   revalidatePath(`/${orgSlug}/reports`);

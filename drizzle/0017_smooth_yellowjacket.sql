@@ -1,0 +1,1 @@
+ALTER TABLE "outbound_endpoints" ADD COLUMN "config" jsonb DEFAULT '{}'::jsonb NOT NULL;

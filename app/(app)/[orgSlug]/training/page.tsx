@@ -2,7 +2,7 @@ import { eq, or, sql } from "drizzle-orm";
 
 import { saveTrainingModule } from "@/app/actions/training";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
 import { trainingModules } from "@/lib/db/schema";
+import Link from "next/link";
 
 export default async function TrainingPage({
   params,
@@ -45,6 +46,12 @@ export default async function TrainingPage({
                   </p>
                 </div>
                 <div className="flex gap-2">
+                  <Link
+                    className={buttonVariants({ variant: "outline", size: "sm" })}
+                    href={`/${orgSlug}/training/${module.id}/scorm`}
+                  >
+                    SCORM 1.2
+                  </Link>
                   <Badge variant="secondary">{module.topic}</Badge>
                   <Badge variant={module.organisationId ? "default" : "outline"}>
                     {module.organisationId ? "Custom" : "System"}

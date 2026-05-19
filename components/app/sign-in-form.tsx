@@ -48,7 +48,8 @@ export function SignInForm() {
         return;
       }
       if (result.kind === "saml") {
-        setServerError("SAML SSO is configured but the assertion handler is still being shipped. Use OIDC for now.");
+        const params = new URLSearchParams({ next: callbackURL });
+        window.location.assign(`/api/sso/saml/${encodeURIComponent(result.organisationSlug)}/login?${params.toString()}`);
         return;
       }
       const oauthResult = await signIn.oauth2({ providerId: result.providerId, callbackURL });
@@ -74,7 +75,7 @@ export function SignInForm() {
           await continueWithSso(values.email);
           return;
         }
-        setServerError("Single sign-on is required for this organisation. Contact your admin.");
+        await continueWithSso(values.email);
         return;
       }
     } catch {

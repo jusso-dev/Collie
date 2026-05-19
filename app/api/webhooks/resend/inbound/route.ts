@@ -4,6 +4,7 @@ import { Resend } from "resend";
 
 import { db } from "@/lib/db/client";
 import { campaignTargets, events } from "@/lib/db/schema";
+import { enqueueSimulationEventPush } from "@/lib/integrations/siem-soar";
 import { recordTrackingEvent } from "@/lib/tracking/record-event";
 
 type ResendInboundPayload = {
@@ -178,22 +179,33 @@ export async function POST(request: NextRequest) {
     .limit(1);
 
   if (event) {
-    await db.insert(events).values({
-      campaignTargetId: event.targetId,
-      eventType: "reported",
-      metadata: {
-        source: "resend_inbound_reply",
-        from,
-        subject,
-        messageId,
-        inReplyTo,
-        originalMessageId,
-        originalRecipient,
-        preview: data.text?.slice(0, 500) ?? data.rawText?.slice(0, 500) ?? "",
-        matchedBy: "reply_headers",
-      },
-    });
+    const [insertedEvent] = await db
+      .insert(events)
+      .values({
+        campaignTargetId: event.targetId,
+        eventType: "reported",
+        metadata: {
+          source: "resend_inbound_reply",
+          from,
+          subject,
+          messageId,
+          inReplyTo,
+          originalMessageId,
+          originalRecipient,
+          preview: data.text?.slice(0, 500) ?? data.rawText?.slice(0, 500) ?? "",
+          matchedBy: "reply_headers",
+        },
+      })
+      .returning({ id: events.id });
     await db.update(campaignTargets).set({ reportedAt: new Date(), updatedAt: new Date() }).where(eq(campaignTargets.id, event.targetId));
+
+    if (insertedEvent) {
+      try {
+        await enqueueSimulationEventPush(insertedEvent.id);
+      } catch (error) {
+        console.warn("SIEM/SOAR push could not be queued for inbound report", error);
+      }
+    }
 
     return NextResponse.json({ ok: true, matched: "reply" });
   }

@@ -1,13 +1,16 @@
 import {
+  deleteSiemSoarEndpoint,
   dismissPendingApiKeyReveal,
   mintIngestApiKey,
   readPendingApiKeyReveal,
   recordTestSyncRun,
   revealIngestApiKey,
   revokeIngestApiKey,
+  rotateSiemSoarSigningKey,
   rotateIngestApiKey,
+  saveSiemSoarEndpoint,
 } from "@/app/actions/integrations";
-import { saveSendingSettings } from "@/app/actions/settings";
+import { saveComplianceRetentionSettings, saveLrsSettings } from "@/app/actions/settings";
 import {
   deleteSsoConfig,
   saveOidcSsoConfig,
@@ -38,6 +41,7 @@ import {
   employeeSyncRuns,
   organisationInvitations,
   organisations,
+  outboundEndpoints,
   ssoConfigurations,
   users,
   verifications,
@@ -45,6 +49,32 @@ import {
 import { buildCampaignReportAddress, buildOrganisationReportAddress } from "@/lib/email/reporting";
 import { and, desc, eq, sql } from "drizzle-orm";
 import Link from "next/link";
+
+const siemSoarConnectorOptions = [
+  { value: "sentinel", label: "Microsoft Sentinel" },
+  { value: "splunk_soar", label: "Splunk SOAR" },
+  { value: "cortex_xsoar", label: "Cortex XSOAR" },
+  { value: "servicenow_sir", label: "ServiceNow SIR" },
+] as const;
+
+const siemSoarFormatOptions = [
+  { value: "json", label: "JSON" },
+  { value: "cef", label: "CEF" },
+  { value: "leef", label: "LEEF" },
+] as const;
+
+const sentinelCloudOptions = [
+  { value: "public", label: "Azure public" },
+  { value: "usgov", label: "Azure US Gov" },
+  { value: "china", label: "Azure China" },
+] as const;
+
+const siemSoarEventOptions = [
+  { value: "clicked", label: "Clicked" },
+  { value: "submitted", label: "Submitted" },
+  { value: "reported", label: "Reported" },
+  { value: "real_mail_report", label: "Real-mail report" },
+] as const;
 
 function safeOpen(sealed: string | null): string | null {
   if (!sealed) return null;
@@ -101,6 +131,16 @@ export default async function SettingsPage({
     .from(organisations)
     .where(eq(organisations.id, organisation.id))
     .limit(1);
+  const [lrsState] = await db
+    .select({
+      lrsEnabled: organisations.lrsEnabled,
+      lrsEndpointUrl: organisations.lrsEndpointUrl,
+      lrsUsernameEncrypted: organisations.lrsUsernameEncrypted,
+      hasLrsPassword: sql<boolean>`${organisations.lrsPasswordEncrypted} is not null`,
+    })
+    .from(organisations)
+    .where(eq(organisations.id, organisation.id))
+    .limit(1);
   const resetLinks = await db
     .select({
       identifier: verifications.identifier,
@@ -140,6 +180,9 @@ export default async function SettingsPage({
       apiKeyHash: organisations.apiKeyHash,
       apiKeyLast4: organisations.apiKeyLast4,
       apiKeyCreatedAt: organisations.apiKeyCreatedAt,
+      siemSoarSigningKeyEncrypted: organisations.siemSoarSigningKeyEncrypted,
+      siemSoarSigningKeyLast4: organisations.siemSoarSigningKeyLast4,
+      siemSoarSigningKeyCreatedAt: organisations.siemSoarSigningKeyCreatedAt,
     })
     .from(organisations)
     .where(eq(organisations.id, organisation.id))
@@ -148,6 +191,24 @@ export default async function SettingsPage({
   const apiKeyLast4 = apiKeyRow?.apiKeyLast4 ?? null;
   const apiKeyCreatedAt = apiKeyRow?.apiKeyCreatedAt ?? null;
   const pendingApiKey = await readPendingApiKeyReveal(orgSlug);
+  const siemSoarEndpoints = await db
+    .select({
+      id: outboundEndpoints.id,
+      name: outboundEndpoints.name,
+      connector: outboundEndpoints.connector,
+      format: outboundEndpoints.format,
+      url: outboundEndpoints.url,
+      config: outboundEndpoints.config,
+      enabled: outboundEndpoints.enabled,
+      eventTypes: outboundEndpoints.eventTypes,
+      maxAttempts: outboundEndpoints.maxAttempts,
+      lastSuccessAt: outboundEndpoints.lastSuccessAt,
+      lastFailureAt: outboundEndpoints.lastFailureAt,
+      createdAt: outboundEndpoints.createdAt,
+    })
+    .from(outboundEndpoints)
+    .where(eq(outboundEndpoints.organisationId, organisation.id))
+    .orderBy(desc(outboundEndpoints.createdAt));
   const recentSyncRuns = await db
     .select({
       id: employeeSyncRuns.id,
@@ -169,6 +230,8 @@ export default async function SettingsPage({
   const singleEndpoint = `${appUrl}/api/v1/employees`;
   const bulkEndpoint = `${appUrl}/api/v1/employees/bulk`;
   const dateFormatter = new Intl.DateTimeFormat("en-AU", { dateStyle: "medium", timeStyle: "short" });
+  const siemSoarSigningKeyReady = Boolean(apiKeyRow?.siemSoarSigningKeyEncrypted);
+  const siemSoarSigningKeyLast4 = apiKeyRow?.siemSoarSigningKeyLast4 ?? null;
 
   return (
     <div className="space-y-6">
@@ -364,6 +427,93 @@ export default async function SettingsPage({
         smtpFromAddress={organisation.smtpFromAddress}
         testRecipientDefault={null}
       />
+      <div className="rounded-lg border border-border bg-card p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h2 className="font-medium">Learning record store</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+              Send training lifecycle statements to an xAPI LRS when assignments start or complete.
+            </p>
+          </div>
+          <Badge variant={lrsState?.lrsEnabled ? "default" : "outline"}>
+            {lrsState?.lrsEnabled ? "xAPI enabled" : "xAPI off"}
+          </Badge>
+        </div>
+        <form action={saveLrsSettings} className="mt-5 grid gap-4 lg:grid-cols-[minmax(240px,1fr)_minmax(160px,220px)_minmax(160px,220px)_auto] lg:items-end">
+          <input type="hidden" name="orgSlug" value={orgSlug} />
+          <input type="hidden" name="hasExistingUsername" value={lrsState?.lrsUsernameEncrypted ? "true" : "false"} />
+          <input type="hidden" name="hasExistingPassword" value={lrsState?.hasLrsPassword ? "true" : "false"} />
+          <div className="space-y-2">
+            <Label htmlFor="lrs-endpoint-url">Endpoint URL</Label>
+            <Input
+              id="lrs-endpoint-url"
+              name="lrsEndpointUrl"
+              type="url"
+              placeholder="https://lrs.example.com/xapi"
+              defaultValue={lrsState?.lrsEndpointUrl ?? ""}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="lrs-username">Username</Label>
+            <Input id="lrs-username" name="lrsUsername" defaultValue={safeOpen(lrsState?.lrsUsernameEncrypted ?? null) ?? ""} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="lrs-password">Password</Label>
+            <Input
+              id="lrs-password"
+              name="lrsPassword"
+              type="password"
+              placeholder={lrsState?.hasLrsPassword ? "Keep existing" : ""}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <label htmlFor="lrs-enabled" className="flex items-center gap-2 text-sm">
+              <input id="lrs-enabled" name="lrsEnabled" type="checkbox" defaultChecked={Boolean(lrsState?.lrsEnabled)} />
+              Enabled
+            </label>
+            <Button type="submit">Save LRS</Button>
+          </div>
+        </form>
+      </div>
+      <div className="rounded-lg border border-border bg-card p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h2 className="font-medium">Privacy retention</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+              Keep simulation aggregates while automatically clearing stored event metadata, IP addresses, and user agents.
+            </p>
+          </div>
+          <Badge variant="outline">Daily sweep</Badge>
+        </div>
+        <form action={saveComplianceRetentionSettings} className="mt-5 grid gap-4 md:grid-cols-[minmax(180px,240px)_minmax(180px,240px)_auto] md:items-end">
+          <input type="hidden" name="orgSlug" value={orgSlug} />
+          <div className="space-y-2">
+            <Label htmlFor="audit-retention-days">Event metadata days</Label>
+            <Input
+              id="audit-retention-days"
+              name="auditRetentionDays"
+              type="number"
+              min={30}
+              max={2555}
+              defaultValue={organisation.auditRetentionDays}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="event-pii-scrub-days">IP and UA days</Label>
+            <Input
+              id="event-pii-scrub-days"
+              name="eventPiiScrubDays"
+              type="number"
+              min={1}
+              max={365}
+              defaultValue={organisation.eventPiiScrubDays}
+              required
+            />
+          </div>
+          <Button type="submit">Save retention</Button>
+        </form>
+      </div>
       <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-5 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="font-medium">Deliverability allowlist guide</h2>
@@ -390,7 +540,7 @@ export default async function SettingsPage({
           <div>
             <h2 className="font-medium">Single sign-on</h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Configure SAML 2.0 or OIDC identity. OIDC is wired end-to-end today; SAML metadata is captured here and the assertion handler ships in a follow-up.
+              Configure SAML 2.0 or OIDC identity. Both flows support SSO enforcement for password sign-in.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -464,9 +614,9 @@ export default async function SettingsPage({
         </form>
 
         <div className="mt-8 border-t border-border pt-5">
-          <h3 className="text-sm font-medium">SAML 2.0 (assertion handler shipping next)</h3>
+          <h3 className="text-sm font-medium">SAML 2.0</h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            Capture your IdP metadata so we can scaffold the per-tenant ACS endpoint. Tenants that need SSO today should use the OIDC tab above.
+            Use the per-tenant ACS and metadata endpoints with your IdP, then paste the IdP metadata XML or URL here.
           </p>
           <form action={saveSamlSsoConfig} className="mt-3 grid gap-4 md:grid-cols-2">
             <input type="hidden" name="orgSlug" value={orgSlug} />
@@ -509,7 +659,7 @@ export default async function SettingsPage({
                 className="size-4 rounded border-input"
               />
               <Label htmlFor="saml-enforce" className="text-sm font-normal">
-                Require SSO for sign-in (active once the SAML assertion handler ships)
+                Require SSO for sign-in (blocks password sign-in for users in this organisation)
               </Label>
             </div>
             <div className="md:col-span-2">
@@ -564,6 +714,318 @@ export default async function SettingsPage({
           <li>Add the `email.received` webhook in Resend using the endpoint above.</li>
           <li>Forward your existing report mailbox or report button destination to the Collie mailbox address.</li>
         </ol>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h2 className="font-medium">SIEM/SOAR push</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+              Push simulation clicks, submissions, reports, and real-mail report clusters to your security tooling with
+              tenant-scoped HMAC signing and durable retry.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant={siemSoarEndpoints.some((endpoint) => endpoint.enabled) ? "default" : "outline"}>
+              {siemSoarEndpoints.filter((endpoint) => endpoint.enabled).length} active
+            </Badge>
+            <Badge variant={siemSoarSigningKeyReady ? "default" : "outline"}>
+              {siemSoarSigningKeyReady ? `Signing key ending ${siemSoarSigningKeyLast4}` : "No signing key"}
+            </Badge>
+          </div>
+        </div>
+
+        <div className="mt-5 rounded-lg border border-border bg-[var(--collie-cloud)] p-3 text-xs">
+          <p className="font-medium uppercase text-muted-foreground">Signature header</p>
+          <p className="mt-2 font-mono">X-Collie-Signature-256: sha256=&lt;hmac(timestamp.deliveryId.body)&gt;</p>
+          <p className="mt-2 text-muted-foreground">
+            Microsoft Sentinel uses Azure Monitor Logs Ingestion instead: configure the DCR endpoint, immutable DCR ID,
+            stream name, and Entra app credentials.
+          </p>
+        </div>
+
+        <form action={saveSiemSoarEndpoint} className="mt-5 grid gap-3 lg:grid-cols-[minmax(180px,1fr)_minmax(260px,2fr)_160px_110px_110px]">
+          <input type="hidden" name="orgSlug" value={orgSlug} />
+          <input type="hidden" name="enabled" value="true" />
+          <div className="space-y-2">
+            <Label htmlFor="siem-name">Name</Label>
+            <Input id="siem-name" name="name" placeholder="Security operations" required />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="siem-url">Endpoint URL</Label>
+            <Input id="siem-url" name="url" type="url" placeholder="https://example.com/collie" required />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="siem-connector">Connector</Label>
+            <select
+              id="siem-connector"
+              name="connector"
+              className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              defaultValue="sentinel"
+            >
+              {siemSoarConnectorOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="siem-format">Format</Label>
+            <select
+              id="siem-format"
+              name="format"
+              className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              defaultValue="json"
+            >
+              {siemSoarFormatOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="siem-attempts">Attempts</Label>
+            <Input id="siem-attempts" name="maxAttempts" type="number" min={1} max={10} defaultValue={5} />
+          </div>
+          <div className="lg:col-span-5">
+            <div className="flex flex-wrap gap-3">
+              {siemSoarEventOptions.map((option) => (
+                <label key={option.value} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    name="eventTypes"
+                    value={option.value}
+                    defaultChecked
+                    className="size-4 rounded border-input"
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="grid gap-3 rounded-lg border border-border bg-[var(--collie-cloud)] p-3 lg:col-span-5 lg:grid-cols-3">
+            <div className="space-y-2">
+              <Label htmlFor="sentinel-cloud">Sentinel cloud</Label>
+              <select
+                id="sentinel-cloud"
+                name="sentinelAzureCloud"
+                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                defaultValue="public"
+              >
+                {sentinelCloudOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="sentinel-tenant">Tenant ID</Label>
+              <Input id="sentinel-tenant" name="sentinelTenantId" placeholder="Entra directory tenant ID" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="sentinel-client">Client ID</Label>
+              <Input id="sentinel-client" name="sentinelClientId" placeholder="App registration client ID" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="sentinel-secret">Client secret</Label>
+              <Input id="sentinel-secret" name="sentinelClientSecret" type="password" placeholder="Required for Sentinel" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="sentinel-dcr">DCR immutable ID</Label>
+              <Input id="sentinel-dcr" name="sentinelDcrImmutableId" placeholder="dcr-..." />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="sentinel-stream">Stream name</Label>
+              <Input id="sentinel-stream" name="sentinelStreamName" placeholder="Custom-Collie_CL" />
+            </div>
+          </div>
+          <div className="lg:col-span-5">
+            <Button type="submit">Add endpoint</Button>
+          </div>
+        </form>
+
+        <div className="mt-5 flex flex-wrap items-center gap-2">
+          <form action={rotateSiemSoarSigningKey}>
+            <input type="hidden" name="orgSlug" value={orgSlug} />
+            <Button type="submit" variant="outline">
+              {siemSoarSigningKeyReady ? "Rotate signing key" : "Create signing key"}
+            </Button>
+          </form>
+          {apiKeyRow?.siemSoarSigningKeyCreatedAt ? (
+            <span className="text-xs text-muted-foreground">
+              Last rotated {dateFormatter.format(apiKeyRow.siemSoarSigningKeyCreatedAt)}
+            </span>
+          ) : null}
+        </div>
+
+        {siemSoarEndpoints.length > 0 ? (
+          <div className="mt-6 space-y-3">
+            {siemSoarEndpoints.map((endpoint) => (
+              <div key={endpoint.id} className="rounded-lg border border-border p-3">
+                <form action={saveSiemSoarEndpoint} className="grid gap-3 lg:grid-cols-[minmax(180px,1fr)_minmax(260px,2fr)_160px_110px_110px_auto]">
+                  <input type="hidden" name="orgSlug" value={orgSlug} />
+                  <input type="hidden" name="endpointId" value={endpoint.id} />
+                  <input
+                    type="hidden"
+                    name="sentinelHasExistingClientSecret"
+                    value={endpoint.config.sentinel?.clientSecretEncrypted ? "true" : "false"}
+                  />
+                  <div className="space-y-2">
+                    <Label htmlFor={`siem-name-${endpoint.id}`}>Name</Label>
+                    <Input id={`siem-name-${endpoint.id}`} name="name" defaultValue={endpoint.name} required />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor={`siem-url-${endpoint.id}`}>Endpoint URL</Label>
+                    <Input id={`siem-url-${endpoint.id}`} name="url" type="url" defaultValue={endpoint.url} required />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor={`siem-connector-${endpoint.id}`}>Connector</Label>
+                    <select
+                      id={`siem-connector-${endpoint.id}`}
+                      name="connector"
+                      className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                      defaultValue={endpoint.connector}
+                    >
+                      {siemSoarConnectorOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor={`siem-format-${endpoint.id}`}>Format</Label>
+                    <select
+                      id={`siem-format-${endpoint.id}`}
+                      name="format"
+                      className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                      defaultValue={endpoint.format}
+                    >
+                      {siemSoarFormatOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor={`siem-attempts-${endpoint.id}`}>Attempts</Label>
+                    <Input
+                      id={`siem-attempts-${endpoint.id}`}
+                      name="maxAttempts"
+                      type="number"
+                      min={1}
+                      max={10}
+                      defaultValue={endpoint.maxAttempts}
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <Button type="submit" variant="outline">Save</Button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 lg:col-span-6">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        name="enabled"
+                        value="true"
+                        defaultChecked={endpoint.enabled}
+                        className="size-4 rounded border-input"
+                      />
+                      Enabled
+                    </label>
+                    {siemSoarEventOptions.map((option) => (
+                      <label key={option.value} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          name="eventTypes"
+                          value={option.value}
+                          defaultChecked={endpoint.eventTypes.includes(option.value)}
+                          className="size-4 rounded border-input"
+                        />
+                        {option.label}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="grid gap-3 rounded-lg border border-border bg-[var(--collie-cloud)] p-3 lg:col-span-6 lg:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label htmlFor={`sentinel-cloud-${endpoint.id}`}>Sentinel cloud</Label>
+                      <select
+                        id={`sentinel-cloud-${endpoint.id}`}
+                        name="sentinelAzureCloud"
+                        className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                        defaultValue={endpoint.config.sentinel?.azureCloud ?? "public"}
+                      >
+                        {sentinelCloudOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor={`sentinel-tenant-${endpoint.id}`}>Tenant ID</Label>
+                      <Input
+                        id={`sentinel-tenant-${endpoint.id}`}
+                        name="sentinelTenantId"
+                        defaultValue={endpoint.config.sentinel?.tenantId ?? ""}
+                        placeholder="Entra directory tenant ID"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor={`sentinel-client-${endpoint.id}`}>Client ID</Label>
+                      <Input
+                        id={`sentinel-client-${endpoint.id}`}
+                        name="sentinelClientId"
+                        defaultValue={endpoint.config.sentinel?.clientId ?? ""}
+                        placeholder="App registration client ID"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor={`sentinel-secret-${endpoint.id}`}>Client secret</Label>
+                      <Input
+                        id={`sentinel-secret-${endpoint.id}`}
+                        name="sentinelClientSecret"
+                        type="password"
+                        placeholder={endpoint.config.sentinel?.clientSecretEncrypted ? "Stored; enter to rotate" : "Required for Sentinel"}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor={`sentinel-dcr-${endpoint.id}`}>DCR immutable ID</Label>
+                      <Input
+                        id={`sentinel-dcr-${endpoint.id}`}
+                        name="sentinelDcrImmutableId"
+                        defaultValue={endpoint.config.sentinel?.dcrImmutableId ?? ""}
+                        placeholder="dcr-..."
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor={`sentinel-stream-${endpoint.id}`}>Stream name</Label>
+                      <Input
+                        id={`sentinel-stream-${endpoint.id}`}
+                        name="sentinelStreamName"
+                        defaultValue={endpoint.config.sentinel?.streamName ?? ""}
+                        placeholder="Custom-Collie_CL"
+                      />
+                    </div>
+                  </div>
+                </form>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3 text-xs text-muted-foreground">
+                  <div>
+                    <Badge variant={endpoint.enabled ? "default" : "outline"}>
+                      {endpoint.enabled ? "Enabled" : "Disabled"}
+                    </Badge>
+                    <span className="ml-2">
+                      Last success {endpoint.lastSuccessAt ? dateFormatter.format(endpoint.lastSuccessAt) : "never"}
+                    </span>
+                    <span className="ml-2">
+                      Last failure {endpoint.lastFailureAt ? dateFormatter.format(endpoint.lastFailureAt) : "never"}
+                    </span>
+                  </div>
+                  <form action={deleteSiemSoarEndpoint}>
+                    <input type="hidden" name="orgSlug" value={orgSlug} />
+                    <input type="hidden" name="endpointId" value={endpoint.id} />
+                    <Button type="submit" variant="outline">Delete</Button>
+                  </form>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-6 text-sm text-muted-foreground">
+            Add an endpoint to start queueing at-least-once deliveries for the selected event types.
+          </p>
+        )}
       </div>
 
       <div className="rounded-lg border border-border bg-card p-5">

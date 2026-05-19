@@ -1,7 +1,13 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "@/lib/db/client";
-import { emailTemplates, landingPages, templateCategory, trainingModules } from "@/lib/db/schema";
+import {
+  emailTemplates,
+  industryBenchmarks,
+  landingPages,
+  templateCategory,
+  trainingModules,
+} from "@/lib/db/schema";
 import { emailLogoMarkup } from "@/lib/email/brand-assets";
 
 const phishingBasicsId = "training-phishing-basics";
@@ -287,7 +293,53 @@ const templates: DemoTemplate[] = [
   },
 ];
 
+const benchmarkRows = [
+  { industry: "all", employeeCountBand: "1-50", medianPpp: 16, sampleSize: 810 },
+  { industry: "all", employeeCountBand: "51-200", medianPpp: 14, sampleSize: 1260 },
+  { industry: "all", employeeCountBand: "201-1000", medianPpp: 12, sampleSize: 980 },
+  { industry: "all", employeeCountBand: "1001-5000", medianPpp: 10, sampleSize: 620 },
+  { industry: "all", employeeCountBand: "5000+", medianPpp: 9, sampleSize: 310 },
+  { industry: "finance", employeeCountBand: "1-50", medianPpp: 13, sampleSize: 120 },
+  { industry: "finance", employeeCountBand: "51-200", medianPpp: 11, sampleSize: 180 },
+  { industry: "finance", employeeCountBand: "201-1000", medianPpp: 9, sampleSize: 160 },
+  { industry: "finance", employeeCountBand: "1001-5000", medianPpp: 8, sampleSize: 95 },
+  { industry: "finance", employeeCountBand: "5000+", medianPpp: 7, sampleSize: 42 },
+  { industry: "healthcare", employeeCountBand: "1-50", medianPpp: 18, sampleSize: 140 },
+  { industry: "healthcare", employeeCountBand: "51-200", medianPpp: 16, sampleSize: 210 },
+  { industry: "healthcare", employeeCountBand: "201-1000", medianPpp: 14, sampleSize: 190 },
+  { industry: "healthcare", employeeCountBand: "1001-5000", medianPpp: 12, sampleSize: 88 },
+  { industry: "healthcare", employeeCountBand: "5000+", medianPpp: 10, sampleSize: 35 },
+  { industry: "technology", employeeCountBand: "1-50", medianPpp: 14, sampleSize: 130 },
+  { industry: "technology", employeeCountBand: "51-200", medianPpp: 12, sampleSize: 220 },
+  { industry: "technology", employeeCountBand: "201-1000", medianPpp: 10, sampleSize: 190 },
+  { industry: "technology", employeeCountBand: "1001-5000", medianPpp: 9, sampleSize: 100 },
+  { industry: "technology", employeeCountBand: "5000+", medianPpp: 8, sampleSize: 48 },
+  { industry: "education", employeeCountBand: "1-50", medianPpp: 19, sampleSize: 90 },
+  { industry: "education", employeeCountBand: "51-200", medianPpp: 17, sampleSize: 140 },
+  { industry: "education", employeeCountBand: "201-1000", medianPpp: 15, sampleSize: 120 },
+  { industry: "education", employeeCountBand: "1001-5000", medianPpp: 13, sampleSize: 70 },
+  { industry: "education", employeeCountBand: "5000+", medianPpp: 11, sampleSize: 28 },
+  { industry: "retail", employeeCountBand: "1-50", medianPpp: 20, sampleSize: 125 },
+  { industry: "retail", employeeCountBand: "51-200", medianPpp: 18, sampleSize: 175 },
+  { industry: "retail", employeeCountBand: "201-1000", medianPpp: 16, sampleSize: 150 },
+  { industry: "retail", employeeCountBand: "1001-5000", medianPpp: 14, sampleSize: 82 },
+  { industry: "retail", employeeCountBand: "5000+", medianPpp: 12, sampleSize: 39 },
+];
+
 async function main() {
+  await db
+    .insert(industryBenchmarks)
+    .values(benchmarkRows)
+    .onConflictDoUpdate({
+      target: [industryBenchmarks.industry, industryBenchmarks.employeeCountBand],
+      set: {
+        medianPpp: sql`excluded.median_ppp`,
+        sampleSize: sql`excluded.sample_size`,
+        calculatedAt: sql`excluded.calculated_at`,
+        updatedAt: new Date(),
+      },
+    });
+
   await db
     .insert(trainingModules)
     .values({
@@ -563,7 +615,7 @@ async function main() {
       },
     });
 
-  console.info(`Seeded ${templates.length} fictional Collie demo templates and 4 landing pages.`);
+  console.info(`Seeded ${templates.length} fictional Collie demo templates, 4 landing pages, and ${benchmarkRows.length} benchmark rows.`);
 }
 
 main()
