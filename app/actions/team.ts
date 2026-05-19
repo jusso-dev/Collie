@@ -11,7 +11,7 @@ import { recordAudit } from "@/lib/audit/record";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { requireSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
-import { accounts, organisationInvitations, organisations, sessions, users, verifications } from "@/lib/db/schema";
+import { accounts, organisationInvitations, organisations, sessions, twoFactors, users, verifications } from "@/lib/db/schema";
 
 const roles = ["owner", "admin", "viewer"] as const;
 
@@ -315,11 +315,24 @@ export async function resetUserMfa(formData: FormData) {
   const organisation = await requireTeamManager(data.orgSlug);
   const now = new Date();
 
-  await db
-    .update(users)
-    .set({ mfaEnabled: false, mfaResetAt: now, updatedAt: now })
-    .where(and(eq(users.id, data.userId), eq(users.organisationId, organisation.id)));
-  await db.delete(sessions).where(eq(sessions.userId, data.userId));
+  // A reset must wipe every place a TOTP secret lives, drop the plugin's
+  // twoFactorEnabled flag, and invalidate any sessions the user has open so
+  // the next sign-in re-enrols them. Done in a single transaction so a partial
+  // failure can't leave the account in a half-reset state.
+  await db.transaction(async (tx) => {
+    await tx
+      .update(users)
+      .set({
+        mfaEnabled: false,
+        twoFactorEnabled: false,
+        totpSecretEncrypted: null,
+        mfaResetAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(users.id, data.userId), eq(users.organisationId, organisation.id)));
+    await tx.delete(twoFactors).where(eq(twoFactors.userId, data.userId));
+    await tx.delete(sessions).where(eq(sessions.userId, data.userId));
+  });
 
   await recordAudit({
     organisationId: organisation.id,
