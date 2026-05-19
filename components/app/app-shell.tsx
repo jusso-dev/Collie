@@ -10,6 +10,7 @@ import {
   Mail,
   Menu,
   Settings,
+  ShieldCheck,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -39,6 +40,7 @@ const navItems = [
   { label: "Landing pages", href: "landing-pages", icon: Flag },
   { label: "Training", href: "training", icon: BookOpen },
   { label: "Reports", href: "reports", icon: BarChart3 },
+  { label: "Audit", href: "audit", icon: ShieldCheck },
   { label: "Settings", href: "settings", icon: Settings },
 ];
 

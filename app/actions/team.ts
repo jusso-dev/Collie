@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { hashPassword } from "better-auth/crypto";
 
+import { recordAudit } from "@/lib/audit/record";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { requireSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
@@ -96,13 +97,25 @@ export async function inviteOrganisationUser(formData: FormData) {
       ),
     );
 
-  await db.insert(organisationInvitations).values({
+  const [invitation] = await db
+    .insert(organisationInvitations)
+    .values({
+      organisationId: organisation.id,
+      email: data.email,
+      role: data.role,
+      token: crypto.randomBytes(24).toString("base64url"),
+      invitedBy: organisation.userId,
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 14),
+    })
+    .returning({ id: organisationInvitations.id });
+
+  await recordAudit({
     organisationId: organisation.id,
-    email: data.email,
-    role: data.role,
-    token: crypto.randomBytes(24).toString("base64url"),
-    invitedBy: organisation.userId,
-    expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 14),
+    actorUserId: organisation.userId,
+    action: "organisation_user.invite",
+    resourceType: "organisation_invitation",
+    resourceId: invitation?.id ?? null,
+    metadata: { email: data.email, role: data.role },
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
@@ -222,6 +235,15 @@ export async function updateOrganisationUserRole(formData: FormData) {
     .set({ role: data.role, updatedAt: new Date() })
     .where(and(eq(users.id, data.userId), eq(users.organisationId, organisation.id)));
 
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "organisation_user.update_role",
+    resourceType: "user",
+    resourceId: data.userId,
+    metadata: { role: data.role },
+  });
+
   revalidatePath(`/${data.orgSlug}/settings`);
 }
 
@@ -247,6 +269,14 @@ export async function removeOrganisationUser(formData: FormData) {
     .where(and(eq(users.id, data.userId), eq(users.organisationId, organisation.id)));
   await db.delete(sessions).where(eq(sessions.userId, data.userId));
 
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "organisation_user.remove",
+    resourceType: "user",
+    resourceId: data.userId,
+  });
+
   revalidatePath(`/${data.orgSlug}/settings`);
 }
 
@@ -265,6 +295,15 @@ export async function setMfaRequirement(formData: FormData) {
     .set({ mfaRequired: data.required === "true", updatedAt: new Date() })
     .where(and(eq(users.id, data.userId), eq(users.organisationId, organisation.id)));
 
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "mfa.set_requirement",
+    resourceType: "user",
+    resourceId: data.userId,
+    metadata: { required: data.required === "true" },
+  });
+
   revalidatePath(`/${data.orgSlug}/settings`);
 }
 
@@ -281,6 +320,14 @@ export async function resetUserMfa(formData: FormData) {
     .set({ mfaEnabled: false, mfaResetAt: now, updatedAt: now })
     .where(and(eq(users.id, data.userId), eq(users.organisationId, organisation.id)));
   await db.delete(sessions).where(eq(sessions.userId, data.userId));
+
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "mfa.reset",
+    resourceType: "user",
+    resourceId: data.userId,
+  });
 
   revalidatePath(`/${data.orgSlug}/settings`);
 }
@@ -301,6 +348,14 @@ export async function cancelOrganisationInvitation(formData: FormData) {
     .update(organisationInvitations)
     .set({ status: "cancelled", updatedAt: new Date() })
     .where(and(eq(organisationInvitations.id, data.invitationId), eq(organisationInvitations.organisationId, organisation.id)));
+
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "organisation_user.cancel_invite",
+    resourceType: "organisation_invitation",
+    resourceId: data.invitationId,
+  });
 
   revalidatePath(`/${data.orgSlug}/settings`);
 }
