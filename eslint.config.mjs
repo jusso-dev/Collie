@@ -17,6 +17,8 @@ const eslintConfig = defineConfig([
     // Sibling agent worktrees and Claude scratch dirs are not part of the
     // tracked source tree.
     ".claude/**",
+    // Static add-in scripts served verbatim to Outlook/Gmail/Teams clients.
+    "public/addins/**",
   ]),
 ]);
 

@@ -696,6 +696,67 @@ export default async function SettingsPage({
           </p>
         )}
       </div>
+      <div className="rounded-lg border border-border bg-card p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h2 className="font-medium">Outlook Phish Report add-in</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+              One-click reporting from Outlook on the web, desktop, and mobile. Reports are deduplicated against
+              active campaigns by token; anything unmatched lands in the real-mail triage queue.
+            </p>
+          </div>
+          <Badge variant="outline">Microsoft 365</Badge>
+        </div>
+        <div className="mt-5 grid gap-3 lg:grid-cols-2">
+          <div className="rounded-lg border border-border bg-[var(--collie-cloud)] p-3">
+            <p className="text-xs font-medium uppercase text-muted-foreground">Manifest URL</p>
+            <p className="mt-2 break-all font-mono text-xs">{appUrl}/api/addin/outlook/manifest.xml</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Paste this URL into Microsoft 365 admin centre → Integrated apps → Upload custom apps.
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-[var(--collie-cloud)] p-3">
+            <p className="text-xs font-medium uppercase text-muted-foreground">Ingest endpoint</p>
+            <p className="mt-2 break-all font-mono text-xs">{appUrl}/api/addin/report</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              The add-in POSTs the message subject, headers, body, and attachment metadata here for triage.
+            </p>
+          </div>
+        </div>
+        <ol className="mt-5 list-decimal space-y-2 pl-5 text-sm leading-6 text-muted-foreground">
+          <li>
+            Sign into the{" "}
+            <a
+              href="https://admin.microsoft.com/Adminportal/Home#/Settings/IntegratedApps"
+              target="_blank"
+              rel="noreferrer"
+              className="underline"
+            >
+              Microsoft 365 admin centre
+            </a>{" "}
+            with a global or apps admin role.
+          </li>
+          <li>Choose <strong>Integrated apps</strong> → <strong>Upload custom apps</strong> → <strong>Office Add-in</strong>.</li>
+          <li>Select <strong>Provide link to manifest file</strong> and paste the manifest URL above.</li>
+          <li>Deploy to the whole organisation or a pilot security group. End users see the &ldquo;Report phish&rdquo; button in the Outlook ribbon.</li>
+          <li>For local testing, use Outlook → Get Add-ins → My add-ins → Add a custom add-in → Add from URL.</li>
+        </ol>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Reporter email is taken from the signed-in mailbox profile and must match an active employee record for the report to be accepted.
+        </p>
+      </div>
+      <div className="rounded-lg border border-border bg-card p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h2 className="font-medium">Gmail &amp; Teams reporting</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+              The Google Workspace add-on and Teams message extension are tracked as follow-up issues. Until they
+              ship, Workspace users can forward suspicious mail to the mailbox above to land in the same triage queue.
+            </p>
+          </div>
+          <Badge variant="outline">On the roadmap</Badge>
+        </div>
+      </div>
     </div>
   );
 }
