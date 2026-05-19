@@ -2,10 +2,11 @@
 
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
 import { recordAudit } from "@/lib/audit/record";
-import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { requireOrganisationRoleForSlug } from "@/lib/auth/organisation";
 import { sealTotpSecret } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
 import { organisations } from "@/lib/db/schema";
@@ -19,6 +20,7 @@ import {
   TransientSendError,
   type OrganisationTransportConfig,
 } from "@/lib/email/campaign-sender";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 const PASSWORD_PLACEHOLDER = "__keep_existing__";
 
@@ -174,7 +176,7 @@ export async function saveSendingSettings(formData: FormData) {
     smtpSecure: stringFromForm(formData, "smtpSecure"),
     smtpFromAddress: stringFromForm(formData, "smtpFromAddress"),
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   const updates: Partial<typeof organisations.$inferInsert> = {
     sendingTransport: data.transport,
@@ -187,7 +189,9 @@ export async function saveSendingSettings(formData: FormData) {
 
   if (data.transport === "resend") {
     if (data.resendApiKey) {
-      updates.resendApiKeyEncrypted = data.resendApiKey;
+      updates.resendApiKeyEncrypted = sealTotpSecret(data.resendApiKey);
+    } else if (organisation.resendApiKeyEncrypted && /^re_[A-Za-z0-9_-]+$/.test(organisation.resendApiKeyEncrypted)) {
+      updates.resendApiKeyEncrypted = sealTotpSecret(organisation.resendApiKeyEncrypted);
     }
   } else {
     updates.smtpHost = data.smtpHost || null;
@@ -222,6 +226,7 @@ export async function saveSendingSettings(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/settings`);
   revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=sending`, "settings-sending"), RedirectType.replace);
 }
 
 export async function saveComplianceRetentionSettings(formData: FormData) {
@@ -230,7 +235,7 @@ export async function saveComplianceRetentionSettings(formData: FormData) {
     auditRetentionDays: stringFromForm(formData, "auditRetentionDays"),
     eventPiiScrubDays: stringFromForm(formData, "eventPiiScrubDays"),
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   await db
     .update(organisations)
@@ -254,6 +259,7 @@ export async function saveComplianceRetentionSettings(formData: FormData) {
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=compliance`, "settings-retention"), RedirectType.replace);
 }
 
 export async function saveLrsSettings(formData: FormData) {
@@ -266,7 +272,7 @@ export async function saveLrsSettings(formData: FormData) {
     hasExistingUsername: stringFromForm(formData, "hasExistingUsername"),
     hasExistingPassword: stringFromForm(formData, "hasExistingPassword"),
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   const updates: Partial<typeof organisations.$inferInsert> = {
     lrsEnabled: data.lrsEnabled,
@@ -294,6 +300,7 @@ export async function saveLrsSettings(formData: FormData) {
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=training`, "settings-lrs"), RedirectType.replace);
 }
 
 const testSendSchema = z.object({
@@ -322,7 +329,7 @@ export async function sendTransportTestEmail(_prevState: TransportTestResult | n
 
   let organisation;
   try {
-    organisation = await requireOrganisationForSlug(parsed.orgSlug);
+    organisation = await requireOrganisationRoleForSlug(parsed.orgSlug, ["owner", "admin"]);
   } catch (error) {
     return {
       ok: false,

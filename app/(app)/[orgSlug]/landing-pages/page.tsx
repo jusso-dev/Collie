@@ -1,6 +1,6 @@
 import { eq, or, sql } from "drizzle-orm";
 
-import { saveLandingPage } from "@/app/actions/landing-pages";
+import { deleteLandingPage, saveLandingPage } from "@/app/actions/landing-pages";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -113,7 +113,21 @@ export default async function LandingPagesPage({
       </Card>
 
       <div className="space-y-3">
-        {pages.map((page) => (
+        {pages.map((page) => {
+          const previewHtml = page.html
+            .replaceAll("{{firstName}}", "Ari")
+            .replaceAll("{{recipientEmail}}", "ari@example.com")
+            .replaceAll("{{token}}", "preview-token")
+            .replaceAll("{{brandName}}", "Campaign brand")
+            .replaceAll("{{brandColour}}", "#0d1b2a")
+            .replaceAll("{{brandLogo}}", '<div class="brand-mark">CB</div>')
+            .replaceAll("{{brandInitial}}", "CB")
+            .replaceAll("{{brandLogoUrl}}", "")
+            .replaceAll("{{trainingTitle}}", page.trainingTitle ?? "Spotting phishing pressure cues")
+            .replaceAll("{{trainingDescription}}", "Pause, inspect links, and report what feels off.")
+            .replaceAll("{{trainingHtml}}", "<p>Check the sender, inspect the link, and slow down urgency.</p>");
+
+          return (
           <details key={page.id} className="rounded-lg border border-border bg-card p-4">
             <summary className="cursor-pointer list-none">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -179,6 +193,15 @@ export default async function LandingPagesPage({
                     </div>
                     <Button type="submit">{page.organisationId ? "Save changes" : "Create custom copy"}</Button>
                   </form>
+                  {page.organisationId ? (
+                    <form action={deleteLandingPage} className="mt-3">
+                      <input type="hidden" name="orgSlug" value={orgSlug} />
+                      <input type="hidden" name="pageId" value={page.id} />
+                      <Button type="submit" variant="outline">
+                        Delete page
+                      </Button>
+                    </form>
+                  ) : null}
                 </CardContent>
               </Card>
               <Card>
@@ -186,29 +209,20 @@ export default async function LandingPagesPage({
                   <CardTitle>Preview</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="rounded-lg border border-border bg-[var(--collie-cloud)] p-4">
-                    <div className="rounded-lg bg-card p-4 text-sm leading-6">
-                      <div
-                        dangerouslySetInnerHTML={{
-                          __html: page.html
-                            .replaceAll("{{firstName}}", "Ari")
-                            .replaceAll("{{brandName}}", "Campaign brand")
-                            .replaceAll("{{brandColour}}", "#0d1b2a")
-                            .replaceAll("{{brandLogo}}", '<div class="brand-mark">CB</div>')
-                            .replaceAll("{{brandInitial}}", "CB")
-                            .replaceAll("{{brandLogoUrl}}", "")
-                            .replaceAll("{{trainingTitle}}", page.trainingTitle ?? "Spotting phishing pressure cues")
-                            .replaceAll("{{trainingDescription}}", "Pause, inspect links, and report what feels off.")
-                            .replaceAll("{{trainingHtml}}", "<p>Check the sender, inspect the link, and slow down urgency.</p>"),
-                        }}
-                      />
-                    </div>
+                  <div className="overflow-hidden rounded-lg border border-border bg-[var(--collie-cloud)]">
+                    <iframe
+                      title={`${page.name} preview`}
+                      srcDoc={previewHtml}
+                      sandbox=""
+                      className="h-[560px] w-full bg-white"
+                    />
                   </div>
                 </CardContent>
               </Card>
             </div>
           </details>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

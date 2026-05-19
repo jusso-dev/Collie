@@ -2,14 +2,17 @@
 
 import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
-import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { requireOrganisationRoleForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
 import { employeeGroups, employees, groups } from "@/lib/db/schema";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 const groupSchema = z.object({
   orgSlug: z.string().min(1),
+  groupId: z.string().optional(),
   name: z.string().trim().min(2).max(100),
   employeeIds: z.array(z.string()).default([]),
 });
@@ -22,24 +25,35 @@ function valueFromForm(formData: FormData, key: string) {
 export async function saveGroup(formData: FormData) {
   const data = groupSchema.parse({
     orgSlug: valueFromForm(formData, "orgSlug"),
+    groupId: valueFromForm(formData, "groupId") || undefined,
     name: valueFromForm(formData, "name"),
     employeeIds: formData.getAll("employeeIds").filter((value): value is string => typeof value === "string"),
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
-  const [group] = await db
-    .insert(groups)
-    .values({
-      organisationId: organisation.id,
-      name: data.name,
-    })
-    .onConflictDoUpdate({
-      target: [groups.organisationId, groups.name],
-      set: {
-        updatedAt: new Date(),
-      },
-    })
-    .returning({ id: groups.id });
+  const [group] = data.groupId
+    ? await db
+        .update(groups)
+        .set({ name: data.name, updatedAt: new Date() })
+        .where(and(eq(groups.id, data.groupId), eq(groups.organisationId, organisation.id)))
+        .returning({ id: groups.id })
+    : await db
+        .insert(groups)
+        .values({
+          organisationId: organisation.id,
+          name: data.name,
+        })
+        .onConflictDoUpdate({
+          target: [groups.organisationId, groups.name],
+          set: {
+            updatedAt: new Date(),
+          },
+        })
+        .returning({ id: groups.id });
+
+  if (!group) {
+    throw new Error("Group not found.");
+  }
 
   await db.delete(employeeGroups).where(eq(employeeGroups.groupId, group.id));
 
@@ -61,15 +75,17 @@ export async function saveGroup(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/groups`);
   revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/groups`, "group-saved"), RedirectType.replace);
 }
 
 export async function deleteGroup(formData: FormData) {
   const orgSlug = valueFromForm(formData, "orgSlug");
   const groupId = valueFromForm(formData, "groupId");
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
 
   await db.delete(groups).where(and(eq(groups.id, groupId), eq(groups.organisationId, organisation.id)));
 
   revalidatePath(`/${orgSlug}/groups`);
   revalidatePath(`/${orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${orgSlug}/groups`, "group-deleted"), RedirectType.replace);
 }

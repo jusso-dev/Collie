@@ -1,6 +1,7 @@
 import { eq, or } from "drizzle-orm";
 import { type NextRequest } from "next/server";
 
+import { openTotpSecret } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
 import {
   campaignTargets,
@@ -13,6 +14,8 @@ import {
 import { recordTrackingEvent } from "@/lib/tracking/record-event";
 import { redactDtmfDigits, redactPii } from "@/lib/voice/redaction";
 import { buildDtmfCompleteTwiML, buildVoiceScript, buildVoiceTwiML } from "@/lib/voice/twilio";
+import { validateTwilioRequestSignature } from "@/lib/sms/twilio";
+import { publicAppUrl } from "@/lib/tracking/public-url";
 
 export const runtime = "nodejs";
 
@@ -32,8 +35,14 @@ type TwilioParams = {
   message: string;
 };
 
-function xmlResponse(body: string) {
+type ParsedTwilioRequest = {
+  params: TwilioParams;
+  signatureParams: Record<string, string>;
+};
+
+function xmlResponse(body: string, status = 200) {
   return new Response(body, {
+    status,
     headers: {
       "Content-Type": "text/xml; charset=utf-8",
       "Cache-Control": "no-store",
@@ -41,9 +50,14 @@ function xmlResponse(body: string) {
   });
 }
 
-async function paramsFrom(request: NextRequest): Promise<TwilioParams> {
+async function paramsFrom(request: NextRequest): Promise<ParsedTwilioRequest> {
   const url = new URL(request.url);
   const formData = request.method === "POST" ? await request.formData().catch(() => null) : null;
+  const signatureParams: Record<string, string> = {};
+
+  for (const [key, formValue] of formData?.entries() ?? []) {
+    if (typeof formValue === "string") signatureParams[key] = formValue;
+  }
 
   const value = (key: string) => {
     const formValue = formData?.get(key);
@@ -52,20 +66,59 @@ async function paramsFrom(request: NextRequest): Promise<TwilioParams> {
   };
 
   return {
-    attemptId: value("attemptId"),
-    token: value("token"),
-    phase: value("phase"),
-    test: value("test") === "1" || value("test") === "true",
-    callSid: value("CallSid"),
-    digits: value("Digits"),
-    recordingUrl: value("RecordingUrl"),
-    recordingSid: value("RecordingSid"),
-    recordingStatus: value("RecordingStatus"),
-    recordingDuration: value("RecordingDuration"),
-    transcriptionText: value("TranscriptionText") || value("RecordingTranscript"),
-    consentCaptured: value("consent") === "1" || value("consent") === "true",
-    message: value("message"),
+    params: {
+      attemptId: value("attemptId"),
+      token: value("token"),
+      phase: value("phase"),
+      test: value("test") === "1" || value("test") === "true",
+      callSid: value("CallSid"),
+      digits: value("Digits"),
+      recordingUrl: value("RecordingUrl"),
+      recordingSid: value("RecordingSid"),
+      recordingStatus: value("RecordingStatus"),
+      recordingDuration: value("RecordingDuration"),
+      transcriptionText: value("TranscriptionText") || value("RecordingTranscript"),
+      consentCaptured: value("consent") === "1" || value("consent") === "true",
+      message: value("message"),
+    },
+    signatureParams,
   };
+}
+
+function webhookValidationEnabled() {
+  return process.env.TWILIO_WEBHOOK_VALIDATE_SIGNATURE !== "false";
+}
+
+function requestSignatureUrls(request: NextRequest) {
+  const direct = new URL(request.url);
+  const urls = new Set<string>([direct.toString()]);
+  const forwardedHost = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+  const forwardedProto = request.headers.get("x-forwarded-proto") ?? direct.protocol.replace(":", "");
+
+  if (forwardedHost) {
+    urls.add(`${forwardedProto}://${forwardedHost}${direct.pathname}${direct.search}`);
+  }
+
+  const publicUrl = new URL(publicAppUrl());
+  urls.add(`${publicUrl.origin}${direct.pathname}${direct.search}`);
+
+  return Array.from(urls);
+}
+
+function isValidTwilioSignature(input: {
+  request: NextRequest;
+  authToken: string;
+  params: Record<string, string>;
+}) {
+  const signature = input.request.headers.get("x-twilio-signature");
+  return requestSignatureUrls(input.request).some((url) =>
+    validateTwilioRequestSignature({
+      authToken: input.authToken,
+      url,
+      params: input.params,
+      signature,
+    }),
+  );
 }
 
 async function loadAttemptContext(input: { attemptId?: string; callSid?: string }) {
@@ -85,6 +138,7 @@ async function loadAttemptContext(input: { attemptId?: string; callSid?: string 
       lastName: employees.lastName,
       department: employees.department,
       organisationName: organisations.name,
+      twilioAuthTokenEncrypted: organisations.twilioAuthTokenEncrypted,
       ttsProvider: organisations.ttsProvider,
       campaignName: campaigns.name,
       scenario: campaigns.scenario,
@@ -225,6 +279,22 @@ async function handleInitialTwiML(request: NextRequest, params: TwilioParams) {
   );
 }
 
+async function validateVoiceWebhook(request: NextRequest, parsed: ParsedTwilioRequest) {
+  if (!webhookValidationEnabled() || parsed.params.test) return true;
+
+  const context = await loadAttemptContext({
+    attemptId: parsed.params.attemptId,
+    callSid: parsed.params.callSid,
+  });
+  if (!context?.twilioAuthTokenEncrypted) return false;
+
+  return isValidTwilioSignature({
+    request,
+    authToken: openTotpSecret(context.twilioAuthTokenEncrypted),
+    params: parsed.signatureParams,
+  });
+}
+
 async function handleStatus(params: TwilioParams) {
   if (params.callSid && params.attemptId) {
     await rememberCallSid({
@@ -242,7 +312,12 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const params = await paramsFrom(request);
+  const parsed = await paramsFrom(request);
+  const params = parsed.params;
+
+  if (!(await validateVoiceWebhook(request, parsed))) {
+    return xmlResponse('<?xml version="1.0" encoding="UTF-8"?><Response />', 403);
+  }
 
   if (params.phase === "recording") {
     return handleRecording(params);

@@ -31,6 +31,7 @@ export function ScimTokenCard({ orgSlug, endpointUrl, hasToken, issuedAt }: Scim
       try {
         const result = await rotateScimToken(formData);
         setLatestToken(result.plaintext);
+        window.dispatchEvent(new CustomEvent("collie:toast", { detail: { toast: "scim-token-rotated" } }));
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Could not mint a SCIM token.");
       }
@@ -45,6 +46,7 @@ export function ScimTokenCard({ orgSlug, endpointUrl, hasToken, issuedAt }: Scim
       try {
         await revokeScimToken(formData);
         setLatestToken(null);
+        window.dispatchEvent(new CustomEvent("collie:toast", { detail: { toast: "scim-token-revoked" } }));
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Could not revoke the SCIM token.");
       }

@@ -1,8 +1,7 @@
 import { and, count, desc, eq, or, sql } from "drizzle-orm";
 import Link from "next/link";
 
-import { createCampaign, launchCampaign, updateCampaignStatus } from "@/app/actions/campaigns";
-import { FlashToast } from "@/components/app/flash-toast";
+import { createCampaign, deleteCampaign, launchCampaign, updateCampaignStatus } from "@/app/actions/campaigns";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -132,7 +131,6 @@ export default async function CampaignsPage({
 
   return (
     <div className="space-y-6">
-      <FlashToast />
       <div className="rounded-lg border border-border bg-[rgb(242_106_33_/_0.10)] p-5">
         <h1 className="text-2xl font-semibold tracking-normal">Campaign builder</h1>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
@@ -433,19 +431,33 @@ export default async function CampaignsPage({
                         <form action={launchCampaign}>
                           <input type="hidden" name="orgSlug" value={orgSlug} />
                           <input type="hidden" name="campaignId" value={campaign.id} />
-                          <input type="hidden" name="mode" value="async" />
+                          <input type="hidden" name="mode" value="sync" />
                           <Button
                             type="submit"
                             disabled={!sendingConfigured || !["draft", "scheduled", "paused"].includes(campaign.status)}
+                            title="Send immediately from this request. Out-of-hours targets are still deferred to the next valid slot."
+                          >
+                            Start now
+                          </Button>
+                        </form>
+                        <form action={launchCampaign}>
+                          <input type="hidden" name="orgSlug" value={orgSlug} />
+                          <input type="hidden" name="campaignId" value={campaign.id} />
+                          <input type="hidden" name="mode" value="async" />
+                          <Button
+                            type="submit"
+                            variant="outline"
+                            disabled={!sendingConfigured || !["draft", "scheduled", "paused"].includes(campaign.status)}
                             title="Hands the launch to Inngest. Retries, idempotency, and working-hours clamping all apply."
                           >
-                            Launch (queued)
+                            Launch queued
                           </Button>
                         </form>
                         <form action={updateCampaignStatus}>
                           <input type="hidden" name="orgSlug" value={orgSlug} />
                           <input type="hidden" name="campaignId" value={campaign.id} />
                           <input type="hidden" name="status" value="completed" />
+                          <input type="hidden" name="returnTo" value={`/${orgSlug}/campaigns`} />
                           <Button type="submit" variant="outline" disabled={campaign.status === "completed"}>
                             Complete
                           </Button>
@@ -454,8 +466,16 @@ export default async function CampaignsPage({
                           <input type="hidden" name="orgSlug" value={orgSlug} />
                           <input type="hidden" name="campaignId" value={campaign.id} />
                           <input type="hidden" name="status" value="cancelled" />
+                          <input type="hidden" name="returnTo" value={`/${orgSlug}/campaigns`} />
                           <Button type="submit" variant="outline" disabled={campaign.status === "cancelled"}>
                             Cancel
+                          </Button>
+                        </form>
+                        <form action={deleteCampaign}>
+                          <input type="hidden" name="orgSlug" value={orgSlug} />
+                          <input type="hidden" name="campaignId" value={campaign.id} />
+                          <Button type="submit" variant="outline">
+                            Delete
                           </Button>
                         </form>
                       </div>

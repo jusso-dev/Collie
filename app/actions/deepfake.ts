@@ -2,6 +2,7 @@
 
 import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
 import { recordAudit } from "@/lib/audit/record";
@@ -13,6 +14,7 @@ import {
 } from "@/lib/deepfake/assets";
 import { db } from "@/lib/db/client";
 import { campaignApprovals, campaigns, deepfakeAssets, users } from "@/lib/db/schema";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 function valueFromForm(formData: FormData, key: string) {
   const value = formData.get(key);
@@ -125,6 +127,7 @@ export async function registerDeepfakeAsset(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/campaigns`);
   revalidatePath(`/${data.orgSlug}/campaigns/${campaign.id}`);
+  redirect(pathWithToast(`/${data.orgSlug}/campaigns/${campaign.id}`, "deepfake-asset"), RedirectType.replace);
 }
 
 const approvalSchema = z.object({
@@ -204,4 +207,5 @@ export async function recordDeepfakeCampaignApproval(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/campaigns`);
   revalidatePath(`/${data.orgSlug}/campaigns/${campaign.id}`);
+  redirect(pathWithToast(`/${data.orgSlug}/campaigns/${campaign.id}`, "deepfake-approval"), RedirectType.replace);
 }

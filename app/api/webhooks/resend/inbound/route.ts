@@ -1,4 +1,4 @@
-import { eq, or, sql } from "drizzle-orm";
+import { eq, or, sql, type SQL } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
 
@@ -160,23 +160,20 @@ export async function POST(request: NextRequest) {
     data.rawText?.match(/^Message-ID:\s*(.+)$/im)?.[1]?.trim() ??
     data.rawText?.match(/^Message-Id:\s*(.+)$/im)?.[1]?.trim() ??
     "";
-  const originalRecipient =
-    data.rawText?.match(/^X-Collie-Recipient:\s*(.+)$/im)?.[1]?.trim() ??
-    data.rawText?.match(/^To:\s*(.+)$/im)?.[1]?.trim() ??
-    "";
-  const [event] = await db
-    .select({ targetId: events.campaignTargetId })
-    .from(events)
-    .where(
-      or(
-        sql`${events.metadata}->>'messageId' = ${inReplyTo}`,
-        sql`${events.metadata}->>'messageId' = ${references}`,
-        sql`${events.metadata}->>'messageId' = ${originalMessageId}`,
-        sql`${events.metadata}->>'recipient' = ${from}`,
-        sql`${events.metadata}->>'recipient' = ${originalRecipient}`,
-      ),
-    )
-    .limit(1);
+
+  const replyClauses: SQL[] = [];
+  if (inReplyTo) replyClauses.push(sql`${events.metadata}->>'messageId' = ${inReplyTo}`);
+  if (references) replyClauses.push(sql`${events.metadata}->>'messageId' = ${references}`);
+  if (originalMessageId) replyClauses.push(sql`${events.metadata}->>'messageId' = ${originalMessageId}`);
+
+  const [event] =
+    replyClauses.length > 0
+      ? await db
+          .select({ targetId: events.campaignTargetId })
+          .from(events)
+          .where(or(...replyClauses))
+          .limit(1)
+      : [];
 
   if (event) {
     const [insertedEvent] = await db
@@ -191,7 +188,6 @@ export async function POST(request: NextRequest) {
           messageId,
           inReplyTo,
           originalMessageId,
-          originalRecipient,
           preview: data.text?.slice(0, 500) ?? data.rawText?.slice(0, 500) ?? "",
           matchedBy: "reply_headers",
         },

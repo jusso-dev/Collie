@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
-import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { requireOrganisationRoleForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
 import { organisations, users } from "@/lib/db/schema";
 import { mintScimToken } from "@/lib/scim/token";
@@ -19,7 +19,7 @@ function formValue(formData: FormData, key: string) {
 }
 
 async function requireScimAdmin(orgSlug: string) {
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
   const [currentUser] = await db
     .select({ role: users.role, active: users.active })
     .from(users)

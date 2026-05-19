@@ -3,11 +3,11 @@
 import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import crypto from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
 import { recordAudit } from "@/lib/audit/record";
-import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { requireOrganisationRoleForSlug } from "@/lib/auth/organisation";
 import {
   applyExclusionRules,
   type ExclusionRule,
@@ -34,6 +34,7 @@ import {
   groups,
   landingPages,
 } from "@/lib/db/schema";
+import { pathWithToast } from "@/lib/navigation/toast";
 import { issueTrainingCertificateForTarget } from "@/lib/training/certificates";
 import { emitCampaignTargetTrainingCompletion } from "@/lib/training/xapi";
 
@@ -113,6 +114,11 @@ function parseCampaignVariants(formData: FormData, defaultTemplateId: string): C
   return Array.from(variants.values());
 }
 
+function safeReturnPath(orgSlug: string, value: string | undefined, fallback: string) {
+  if (!value) return fallback;
+  return value.startsWith(`/${orgSlug}/`) ? value : fallback;
+}
+
 function stableWeightedVariant<T extends { id: string; weight: number }>(input: {
   campaignId: string;
   employeeId: string;
@@ -153,7 +159,7 @@ export async function createCampaign(formData: FormData) {
       .getAll("exclusionRuleIds")
       .filter((value): value is string => typeof value === "string"),
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
   const variantInputs = parseCampaignVariants(formData, data.emailTemplateId);
   const variantTemplateIds = variantInputs.map((variant) => variant.templateId);
 
@@ -453,7 +459,7 @@ export async function launchCampaign(formData: FormData) {
     campaignId: valueFromForm(formData, "campaignId"),
     mode: valueFromForm(formData, "mode") || undefined,
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   // Sync mode is dev-only — useful when there's no Inngest dev server running.
   // Defaults to the new async dispatcher which hands off to Inngest.
@@ -488,15 +494,56 @@ const campaignStateSchema = z.object({
   orgSlug: z.string().min(1),
   campaignId: z.string().min(1),
   status: z.enum(["completed", "cancelled", "paused"]),
+  returnTo: z.string().optional(),
 });
+
+const deleteCampaignSchema = z.object({
+  orgSlug: z.string().min(1),
+  campaignId: z.string().min(1),
+});
+
+export async function deleteCampaign(formData: FormData) {
+  const data = deleteCampaignSchema.parse({
+    orgSlug: valueFromForm(formData, "orgSlug"),
+    campaignId: valueFromForm(formData, "campaignId"),
+  });
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
+
+  const [campaign] = await db
+    .select({ id: campaigns.id, name: campaigns.name, status: campaigns.status })
+    .from(campaigns)
+    .where(and(eq(campaigns.id, data.campaignId), eq(campaigns.organisationId, organisation.id)))
+    .limit(1);
+
+  if (!campaign) {
+    throw new Error("Campaign not found.");
+  }
+
+  await db.delete(campaigns).where(and(eq(campaigns.id, data.campaignId), eq(campaigns.organisationId, organisation.id)));
+
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "campaign.delete",
+    resourceType: "campaign",
+    resourceId: data.campaignId,
+    metadata: { name: campaign.name, status: campaign.status },
+  });
+
+  revalidatePath(`/${data.orgSlug}/campaigns`);
+  revalidatePath(`/${data.orgSlug}/reports`);
+  revalidatePath(`/${data.orgSlug}/dashboard`);
+  redirect(`/${data.orgSlug}/campaigns?deleted=1`);
+}
 
 export async function updateCampaignStatus(formData: FormData) {
   const data = campaignStateSchema.parse({
     orgSlug: valueFromForm(formData, "orgSlug"),
     campaignId: valueFromForm(formData, "campaignId"),
     status: valueFromForm(formData, "status"),
+    returnTo: valueFromForm(formData, "returnTo") || undefined,
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   await db
     .update(campaigns)
@@ -516,13 +563,21 @@ export async function updateCampaignStatus(formData: FormData) {
   revalidatePath(`/${data.orgSlug}/campaigns/${data.campaignId}`);
   revalidatePath(`/${data.orgSlug}/reports`);
   revalidatePath(`/${data.orgSlug}/dashboard`);
+  redirect(
+    pathWithToast(
+      safeReturnPath(data.orgSlug, data.returnTo, `/${data.orgSlug}/campaigns/${data.campaignId}`),
+      "campaign-status",
+    ),
+    RedirectType.replace,
+  );
 }
 
 export async function markTargetEvent(formData: FormData) {
   const orgSlug = valueFromForm(formData, "orgSlug");
   const token = valueFromForm(formData, "token");
   const eventType = valueFromForm(formData, "eventType");
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const returnTo = valueFromForm(formData, "returnTo");
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
 
   if (!["opened", "clicked", "submitted", "reported", "trained"].includes(eventType)) {
     throw new Error("Unsupported event type.");
@@ -580,4 +635,5 @@ export async function markTargetEvent(formData: FormData) {
   revalidatePath(`/${orgSlug}/campaigns`);
   revalidatePath(`/${orgSlug}/reports`);
   revalidatePath(`/${orgSlug}/dashboard`);
+  redirect(pathWithToast(safeReturnPath(orgSlug, returnTo, `/${orgSlug}/campaigns`), "target-event"), RedirectType.replace);
 }

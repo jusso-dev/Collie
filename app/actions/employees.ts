@@ -2,12 +2,14 @@
 
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
-import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { requireOrganisationRoleForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
 import { employees, employeeSyncRuns } from "@/lib/db/schema";
 import { ingestEmployees, parseEmployeesCsv } from "@/lib/employees/ingest";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 const employeeSchema = z.object({
   orgSlug: z.string().min(1),
@@ -42,7 +44,7 @@ function parseEmployee(formData: FormData): EmployeeInput {
 
 export async function createEmployee(formData: FormData) {
   const data = parseEmployee(formData);
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   await db
     .insert(employees)
@@ -72,12 +74,13 @@ export async function createEmployee(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/employees`);
   revalidatePath(`/${data.orgSlug}/dashboard`);
+  redirect(pathWithToast(`/${data.orgSlug}/employees`, "employee-saved"), RedirectType.replace);
 }
 
 export async function importEmployeesCsv(formData: FormData) {
   const orgSlug = valueFromForm(formData, "orgSlug");
   const csv = valueFromForm(formData, "csv");
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
 
   const { rows, errors } = parseEmployeesCsv(csv);
 
@@ -108,13 +111,14 @@ export async function importEmployeesCsv(formData: FormData) {
   revalidatePath(`/${orgSlug}/employees`);
   revalidatePath(`/${orgSlug}/dashboard`);
   revalidatePath(`/${orgSlug}/settings`);
+  redirect(pathWithToast(`/${orgSlug}/employees`, "employees-imported"), RedirectType.replace);
 }
 
 export async function setEmployeeActive(formData: FormData) {
   const orgSlug = valueFromForm(formData, "orgSlug");
   const employeeId = valueFromForm(formData, "employeeId");
   const active = valueFromForm(formData, "active") === "true";
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
 
   await db
     .update(employees)
@@ -123,6 +127,7 @@ export async function setEmployeeActive(formData: FormData) {
 
   revalidatePath(`/${orgSlug}/employees`);
   revalidatePath(`/${orgSlug}/dashboard`);
+  redirect(pathWithToast(`/${orgSlug}/employees`, "employee-status"), RedirectType.replace);
 }
 
 const exclusionSchema = z.object({
@@ -141,7 +146,7 @@ export async function setEmployeeExclusion(formData: FormData) {
     reason: valueFromForm(formData, "reason") || undefined,
     until: valueFromForm(formData, "until") || undefined,
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
   const excluded = data.excluded === "true";
 
   let until: Date | null = null;
@@ -165,4 +170,5 @@ export async function setEmployeeExclusion(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/employees`);
   revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/employees`, "employee-exclusion"), RedirectType.replace);
 }

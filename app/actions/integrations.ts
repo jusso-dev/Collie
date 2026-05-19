@@ -3,6 +3,7 @@
 import { and, eq } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
 import {
@@ -10,7 +11,7 @@ import {
   mintOrganisationApiKey,
   revokeOrganisationApiKey,
 } from "@/lib/auth/api-key";
-import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { requireOrganisationRoleForSlug } from "@/lib/auth/organisation";
 import { openTotpSecret, sealTotpSecret } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
 import { employeeSyncRuns, organisations, type OutboundEndpointConfig, outboundEndpoints } from "@/lib/db/schema";
@@ -19,6 +20,7 @@ import {
   rotateOrganisationSiemSoarSigningKey,
   SIEM_SOAR_EVENT_TYPES,
 } from "@/lib/integrations/siem-soar";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 const REVEAL_COOKIE_PREFIX = "collie-api-key-reveal:";
 const REVEAL_TTL_SECONDS = 60;
@@ -84,27 +86,30 @@ export async function dismissPendingApiKeyReveal(formData: FormData) {
   const cookieStore = await cookies();
   cookieStore.delete(`${REVEAL_COOKIE_PREFIX}${orgSlug}`);
   revalidatePath(`/${orgSlug}/settings`);
+  redirect(pathWithToast(`/${orgSlug}/settings?tab=integrations`, "api-key-dismissed"), RedirectType.replace);
 }
 
 export async function mintIngestApiKey(formData: FormData) {
   const { orgSlug } = slugSchema.parse({ orgSlug: stringFromForm(formData, "orgSlug") });
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
   const { key } = await mintOrganisationApiKey(organisation.id);
   await stashRevealCookie(orgSlug, key);
   revalidatePath(`/${orgSlug}/settings`);
+  redirect(pathWithToast(`/${orgSlug}/settings?tab=integrations`, "api-key-minted"), RedirectType.replace);
 }
 
 export async function rotateIngestApiKey(formData: FormData) {
   const { orgSlug } = slugSchema.parse({ orgSlug: stringFromForm(formData, "orgSlug") });
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
   const { key } = await mintOrganisationApiKey(organisation.id);
   await stashRevealCookie(orgSlug, key);
   revalidatePath(`/${orgSlug}/settings`);
+  redirect(pathWithToast(`/${orgSlug}/settings?tab=integrations`, "api-key-rotated"), RedirectType.replace);
 }
 
 export async function revealIngestApiKey(formData: FormData) {
   const { orgSlug } = slugSchema.parse({ orgSlug: stringFromForm(formData, "orgSlug") });
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
 
   const [row] = await db
     .select({ apiKeyEncrypted: organisations.apiKeyEncrypted })
@@ -119,20 +124,22 @@ export async function revealIngestApiKey(formData: FormData) {
   const key = openTotpSecret(row.apiKeyEncrypted);
   await stashRevealCookie(orgSlug, key);
   revalidatePath(`/${orgSlug}/settings`);
+  redirect(pathWithToast(`/${orgSlug}/settings?tab=integrations`, "api-key-revealed"), RedirectType.replace);
 }
 
 export async function revokeIngestApiKey(formData: FormData) {
   const { orgSlug } = slugSchema.parse({ orgSlug: stringFromForm(formData, "orgSlug") });
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
   await revokeOrganisationApiKey(organisation.id);
   const cookieStore = await cookies();
   cookieStore.delete(`${REVEAL_COOKIE_PREFIX}${orgSlug}`);
   revalidatePath(`/${orgSlug}/settings`);
+  redirect(pathWithToast(`/${orgSlug}/settings?tab=integrations`, "api-key-revoked"), RedirectType.replace);
 }
 
 export async function recordTestSyncRun(formData: FormData) {
   const { orgSlug } = slugSchema.parse({ orgSlug: stringFromForm(formData, "orgSlug") });
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
 
   // Read the key (if minted) to validate it round-trips via the same Bearer path the API uses.
   const [row] = await db
@@ -170,6 +177,7 @@ export async function recordTestSyncRun(formData: FormData) {
   });
 
   revalidatePath(`/${orgSlug}/settings`);
+  redirect(pathWithToast(`/${orgSlug}/settings?tab=integrations`, "sync-test"), RedirectType.replace);
 }
 
 export async function saveSiemSoarEndpoint(formData: FormData) {
@@ -191,7 +199,7 @@ export async function saveSiemSoarEndpoint(formData: FormData) {
     sentinelDcrImmutableId: stringFromForm(formData, "sentinelDcrImmutableId"),
     sentinelStreamName: stringFromForm(formData, "sentinelStreamName"),
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   let existingConfig: OutboundEndpointConfig | null = null;
   if (data.endpointId) {
@@ -256,6 +264,7 @@ export async function saveSiemSoarEndpoint(formData: FormData) {
   }
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=integrations`, "siem-saved"), RedirectType.replace);
 }
 
 function requiredSentinelValue(value: string, label: string) {
@@ -283,17 +292,19 @@ export async function deleteSiemSoarEndpoint(formData: FormData) {
   const endpointId = stringFromForm(formData, "endpointId");
   if (!endpointId) throw new Error("Endpoint id is required.");
 
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
   await db
     .delete(outboundEndpoints)
     .where(and(eq(outboundEndpoints.id, endpointId), eq(outboundEndpoints.organisationId, organisation.id)));
 
   revalidatePath(`/${orgSlug}/settings`);
+  redirect(pathWithToast(`/${orgSlug}/settings?tab=integrations`, "siem-deleted"), RedirectType.replace);
 }
 
 export async function rotateSiemSoarSigningKey(formData: FormData) {
   const { orgSlug } = slugSchema.parse({ orgSlug: stringFromForm(formData, "orgSlug") });
-  const organisation = await requireOrganisationForSlug(orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(orgSlug, ["owner", "admin"]);
   await rotateOrganisationSiemSoarSigningKey(organisation.id);
   revalidatePath(`/${orgSlug}/settings`);
+  redirect(pathWithToast(`/${orgSlug}/settings?tab=integrations`, "siem-key-rotated"), RedirectType.replace);
 }

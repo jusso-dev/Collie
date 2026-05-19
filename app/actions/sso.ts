@@ -2,6 +2,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
@@ -12,6 +13,7 @@ import {
 import { sealTotpSecret } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
 import { ssoConfigurations, users } from "@/lib/db/schema";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 function formValue(formData: FormData, key: string) {
   const value = formData.get(key);
@@ -98,6 +100,7 @@ export async function saveOidcSsoConfig(formData: FormData) {
 
   await refreshSsoCache();
   revalidatePath(`/${organisation.slug}/settings`);
+  redirect(pathWithToast(`/${organisation.slug}/settings?tab=identity`, "sso-saved"), RedirectType.replace);
 }
 
 const samlSchema = z.object({
@@ -153,6 +156,7 @@ export async function saveSamlSsoConfig(formData: FormData) {
 
   await refreshSsoCache();
   revalidatePath(`/${organisation.slug}/settings`);
+  redirect(pathWithToast(`/${organisation.slug}/settings?tab=identity`, "sso-saved"), RedirectType.replace);
 }
 
 const deleteSchema = z.object({ orgSlug: z.string().min(1) });
@@ -164,6 +168,7 @@ export async function deleteSsoConfig(formData: FormData) {
   await db.delete(ssoConfigurations).where(eq(ssoConfigurations.organisationId, organisation.id));
   await refreshSsoCache();
   revalidatePath(`/${organisation.slug}/settings`);
+  redirect(pathWithToast(`/${organisation.slug}/settings?tab=identity`, "sso-deleted"), RedirectType.replace);
 }
 
 const enforceSchema = z.object({
@@ -185,6 +190,7 @@ export async function toggleSsoEnforcement(formData: FormData) {
 
   await refreshSsoCache();
   revalidatePath(`/${organisation.slug}/settings`);
+  redirect(pathWithToast(`/${organisation.slug}/settings?tab=identity`, "sso-enforcement"), RedirectType.replace);
 }
 
 /**

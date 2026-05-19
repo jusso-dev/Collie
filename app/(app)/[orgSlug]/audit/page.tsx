@@ -43,6 +43,15 @@ function buildQueryString(params: Record<string, string | number | undefined>) {
   return result ? `?${result}` : "";
 }
 
+function formatMetadata(value: unknown) {
+  if (!value || (typeof value === "object" && Object.keys(value).length === 0)) return "{}";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "{}";
+  }
+}
+
 export default async function AuditPage({
   params,
   searchParams,
@@ -194,66 +203,68 @@ export default async function AuditPage({
             No audit entries match these filters yet.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] text-left text-sm">
-              <thead className="border-b text-xs uppercase text-muted-foreground">
-                <tr>
-                  <th className="py-3 pr-4 font-medium">When</th>
-                  <th className="py-3 pr-4 font-medium">Actor</th>
-                  <th className="py-3 pr-4 font-medium">Action</th>
-                  <th className="py-3 pr-4 font-medium">Resource</th>
-                  <th className="py-3 pr-4 font-medium">Metadata</th>
-                  <th className="py-3 font-medium">IP</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const metadataPreview = (() => {
-                    if (!row.metadata || Object.keys(row.metadata).length === 0) return "—";
-                    try {
-                      return JSON.stringify(row.metadata);
-                    } catch {
-                      return "—";
-                    }
-                  })();
+          <div className="divide-y divide-border rounded-lg border border-border">
+            {rows.map((row) => {
+              const metadata = formatMetadata(row.metadata);
+              const actorLabel = row.actorUserId ? (row.actorName ?? row.actorEmail ?? "Unknown user") : "System";
 
-                  return (
-                    <tr key={row.id} className="border-b align-top last:border-b-0">
-                      <td className="py-3 pr-4 font-mono text-xs">{formatDateTime(row.createdAt)}</td>
-                      <td className="py-3 pr-4">
-                        {row.actorUserId ? (
-                          <>
-                            <div className="font-medium">{row.actorName ?? "Unknown user"}</div>
-                            <div className="text-muted-foreground">{row.actorEmail ?? row.actorUserId}</div>
-                          </>
-                        ) : (
-                          <span className="text-muted-foreground">System</span>
-                        )}
-                      </td>
-                      <td className="py-3 pr-4">
-                        <span className="rounded-md bg-[var(--collie-cloud)] px-2 py-1 font-mono text-xs">
-                          {row.action}
-                        </span>
-                      </td>
-                      <td className="py-3 pr-4">
-                        <div className="font-medium">{row.resourceType}</div>
-                        {row.resourceId ? (
-                          <div className="break-all font-mono text-xs text-muted-foreground">
-                            {row.resourceId}
-                          </div>
-                        ) : null}
-                      </td>
-                      <td className="py-3 pr-4">
-                        <div className="max-w-[28rem] truncate font-mono text-xs text-muted-foreground" title={metadataPreview}>
-                          {metadataPreview}
-                        </div>
-                      </td>
-                      <td className="py-3 font-mono text-xs text-muted-foreground">{row.ipAddress ?? "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+              return (
+                <details key={row.id} className="group">
+                  <summary className="grid cursor-pointer list-none gap-3 p-4 hover:bg-[var(--collie-cloud)] md:grid-cols-[170px_minmax(180px,1fr)_minmax(160px,220px)_120px] md:items-center">
+                    <div>
+                      <div className="font-mono text-xs text-muted-foreground">{formatDateTime(row.createdAt)}</div>
+                      <div className="mt-1 font-medium">{actorLabel}</div>
+                      {row.actorEmail && row.actorEmail !== actorLabel ? (
+                        <div className="text-xs text-muted-foreground">{row.actorEmail}</div>
+                      ) : null}
+                    </div>
+                    <div>
+                      <span className="rounded-md bg-[var(--collie-cloud)] px-2 py-1 font-mono text-xs">
+                        {row.action}
+                      </span>
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        {row.resourceType}
+                        {row.resourceId ? ` · ${row.resourceId.slice(0, 12)}` : ""}
+                      </div>
+                    </div>
+                    <div className="truncate font-mono text-xs text-muted-foreground">{metadata.replace(/\s+/g, " ")}</div>
+                    <div className="text-sm font-medium text-primary">
+                      <span className="group-open:hidden">View details</span>
+                      <span className="hidden group-open:inline">Hide details</span>
+                    </div>
+                  </summary>
+                  <div className="grid gap-4 border-t border-border bg-[var(--collie-cloud)] p-4 lg:grid-cols-[minmax(220px,0.8fr)_minmax(320px,1.2fr)]">
+                    <dl className="grid gap-3 text-sm">
+                      <div>
+                        <dt className="text-xs font-medium uppercase text-muted-foreground">Resource</dt>
+                        <dd className="mt-1 break-all font-mono text-xs">
+                          {row.resourceType}
+                          {row.resourceId ? `:${row.resourceId}` : ""}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs font-medium uppercase text-muted-foreground">Audit ID</dt>
+                        <dd className="mt-1 break-all font-mono text-xs">{row.id}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs font-medium uppercase text-muted-foreground">IP address</dt>
+                        <dd className="mt-1 font-mono text-xs">{row.ipAddress ?? "Not captured"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs font-medium uppercase text-muted-foreground">User agent</dt>
+                        <dd className="mt-1 break-all font-mono text-xs">{row.userAgent ?? "Not captured"}</dd>
+                      </div>
+                    </dl>
+                    <div>
+                      <h3 className="text-sm font-medium">Metadata</h3>
+                      <pre className="mt-2 max-h-80 overflow-auto rounded-lg border border-border bg-card p-3 font-mono text-xs">
+                        {metadata}
+                      </pre>
+                    </div>
+                  </div>
+                </details>
+              );
+            })}
           </div>
         )}
 

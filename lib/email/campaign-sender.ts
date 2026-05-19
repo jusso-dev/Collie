@@ -296,7 +296,12 @@ export type OrganisationTransportConfig = {
 
 function decryptIfSet(sealed: string | null): string | null {
   if (!sealed) return null;
-  return openTotpSecret(sealed);
+  try {
+    return openTotpSecret(sealed);
+  } catch (error) {
+    if (/^re_[A-Za-z0-9_-]+$/.test(sealed)) return sealed;
+    throw error;
+  }
 }
 
 export function getTransportForOrganisation(org: OrganisationTransportConfig): CampaignTransport {
@@ -321,8 +326,12 @@ export function getTransportForOrganisation(org: OrganisationTransportConfig): C
   if (!org.resendApiKeyEncrypted || !org.senderFromAddress) {
     throw new Error("Add a Resend API key and sender From address in Settings before sending.");
   }
+  const apiKey = decryptIfSet(org.resendApiKeyEncrypted);
+  if (!apiKey) {
+    throw new Error("Add a Resend API key and sender From address in Settings before sending.");
+  }
   return new ResendTransport({
-    apiKey: org.resendApiKeyEncrypted,
+    apiKey,
     from: org.senderFromAddress,
     organisationName: org.name,
   });

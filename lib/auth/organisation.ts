@@ -47,6 +47,7 @@ export async function requireOrganisationForSlug(orgSlug: string) {
       twilioSenderPhonePool: organisations.twilioSenderPhonePool,
       twilioOptOutKeywords: organisations.twilioOptOutKeywords,
       userActive: users.active,
+      userRole: users.role,
     })
     .from(organisations)
     .innerJoin(users, eq(users.id, session.user.id))
@@ -82,5 +83,19 @@ export async function requireOrganisationForSlug(orgSlug: string) {
     twilioSenderPhonePool: organisation.twilioSenderPhonePool,
     twilioOptOutKeywords: organisation.twilioOptOutKeywords,
     userId: session.user.id,
+    userRole: organisation.userRole,
   };
+}
+
+export async function requireOrganisationRoleForSlug(
+  orgSlug: string,
+  allowedRoles: Array<"owner" | "admin" | "viewer">,
+) {
+  const organisation = await requireOrganisationForSlug(orgSlug);
+
+  if (!allowedRoles.includes(organisation.userRole)) {
+    throw new OrganisationAccessError("Your role cannot perform this action.");
+  }
+
+  return organisation;
 }

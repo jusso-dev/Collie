@@ -2,7 +2,7 @@
 
 import { and, eq, ne, sql } from "drizzle-orm";
 import crypto from "node:crypto";
-import { redirect } from "next/navigation";
+import { redirect, RedirectType } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { hashPassword } from "better-auth/crypto";
@@ -12,6 +12,7 @@ import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { requireSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
 import { accounts, organisationInvitations, organisations, sessions, twoFactors, users, verifications } from "@/lib/db/schema";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 const roles = ["owner", "admin", "viewer"] as const;
 
@@ -119,6 +120,7 @@ export async function inviteOrganisationUser(formData: FormData) {
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=team`, "team-invited"), RedirectType.replace);
 }
 
 const invitationSchema = z.object({ token: z.string().min(16) });
@@ -200,6 +202,7 @@ export async function issuePasswordResetLink(formData: FormData) {
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=team`, "team-password-reset"), RedirectType.replace);
 }
 
 export async function revokePasswordResetLink(formData: FormData) {
@@ -210,6 +213,7 @@ export async function revokePasswordResetLink(formData: FormData) {
   const organisation = await requireTeamManager(data.orgSlug);
   await db.delete(verifications).where(and(sql`${verifications.identifier} like 'reset-password:%'`, eq(verifications.value, data.userId)));
   revalidatePath(`/${organisation.slug}/settings`);
+  redirect(pathWithToast(`/${organisation.slug}/settings?tab=team`, "team-password-reset-revoked"), RedirectType.replace);
 }
 
 const roleSchema = userActionSchema.extend({ role: z.enum(roles) });
@@ -245,6 +249,7 @@ export async function updateOrganisationUserRole(formData: FormData) {
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=team`, "team-role"), RedirectType.replace);
 }
 
 export async function removeOrganisationUser(formData: FormData) {
@@ -278,6 +283,7 @@ export async function removeOrganisationUser(formData: FormData) {
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=team`, "team-removed"), RedirectType.replace);
 }
 
 const mfaSchema = userActionSchema.extend({ required: z.enum(["true", "false"]) });
@@ -305,6 +311,7 @@ export async function setMfaRequirement(formData: FormData) {
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=team`, "team-mfa"), RedirectType.replace);
 }
 
 export async function resetUserMfa(formData: FormData) {
@@ -343,6 +350,7 @@ export async function resetUserMfa(formData: FormData) {
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=team`, "team-mfa"), RedirectType.replace);
 }
 
 const cancelInviteSchema = z.object({
@@ -371,6 +379,7 @@ export async function cancelOrganisationInvitation(formData: FormData) {
   });
 
   revalidatePath(`/${data.orgSlug}/settings`);
+  redirect(pathWithToast(`/${data.orgSlug}/settings?tab=team`, "team-invite-cancelled"), RedirectType.replace);
 }
 
 const resetPasswordSchema = z

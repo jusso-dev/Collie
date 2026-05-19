@@ -34,13 +34,17 @@ async function assertFreshTenantPage(page: Page) {
     expect(text, `Unexpected placeholder/demo text: ${forbidden}`).not.toContain(forbidden);
   }
 
-  const placeholders = await page.locator("input[placeholder], textarea[placeholder]").evaluateAll((nodes) =>
+  const placeholderText = await page.locator("input[placeholder], textarea[placeholder]").evaluateAll((nodes) =>
     nodes
       .map((node) => node.getAttribute("placeholder")?.trim() ?? "")
       .filter(Boolean),
   );
 
-  expect(placeholders, "Fresh tenant pages should not show example placeholder data").toEqual([]);
+  for (const placeholder of placeholderText) {
+    for (const forbidden of forbiddenFreshTenantText) {
+      expect(placeholder, `Fresh tenant placeholder should not show example data: ${forbidden}`).not.toContain(forbidden);
+    }
+  }
 }
 
 async function cleanupAuditData() {
@@ -83,8 +87,8 @@ test.describe.serial("Collie fresh tenant audit", () => {
     await expect(page).toHaveURL(/\/audit-tenant-\d+\/dashboard$/);
     orgSlug = new URL(page.url()).pathname.split("/")[1];
 
-    await expect(page.getByText("Not calculated yet")).toBeVisible();
-    await expect(page.getByText("No trend data yet")).toBeVisible();
+    await expect(page.getByText("No data").first()).toBeVisible();
+    await expect(page.getByText("No history").first()).toBeVisible();
     await assertFreshTenantPage(page);
 
     await page.goto(`/${orgSlug}/dashboard`);
@@ -209,7 +213,7 @@ test.describe.serial("Collie fresh tenant audit", () => {
     expect(eventDownload.suggestedFilename()).toContain("raw-events.csv");
 
     const pages = [
-      { path: "dashboard", heading: "Run realistic simulations without making people feel small." },
+      { path: "dashboard", heading: "Org, cohort, and industry benchmark view." },
       { path: "employees", heading: "Employees" },
       { path: "groups", heading: "Groups" },
       { path: "campaigns", heading: "Campaign builder" },

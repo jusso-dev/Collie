@@ -60,6 +60,13 @@ export default async function GroupsPage({
         </p>
       </div>
 
+      <div className="rounded-lg border border-border bg-card p-4 text-sm leading-6 text-muted-foreground">
+        <p>
+          Groups are reusable employee cohorts for campaign targeting and exclusions. Create one when you need to send
+          to a specific department, pilot team, risk cohort, or managed subset instead of all active employees.
+        </p>
+      </div>
+
       <div className="grid gap-4 xl:grid-cols-[420px_1fr]">
         <Card>
           <CardHeader>
@@ -126,6 +133,7 @@ export default async function GroupsPage({
                   <div className="mt-4 space-y-4 border-t border-border pt-4">
                     <form action={saveGroup} className="space-y-4">
                       <input type="hidden" name="orgSlug" value={orgSlug} />
+                      <input type="hidden" name="groupId" value={group.id} />
                       <div className="space-y-2">
                         <Label htmlFor={`name-${group.id}`}>Group name</Label>
                         <Input id={`name-${group.id}`} name="name" defaultValue={group.name} required />

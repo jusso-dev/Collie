@@ -2,11 +2,13 @@
 
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
-import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { requireOrganisationRoleForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
 import { exclusionRules, groups, type ExclusionRuleParameters } from "@/lib/db/schema";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 const ruleKindSchema = z.enum(["group", "new_hire_days", "role", "tag"]);
 
@@ -65,7 +67,7 @@ export async function createExclusionRule(formData: FormData) {
     days: valueFromForm(formData, "days") || undefined,
     active: valueFromForm(formData, "active") || undefined,
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
   const parameters = await buildParameters({
     organisationId: organisation.id,
     kind: data.kind,
@@ -83,6 +85,7 @@ export async function createExclusionRule(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/exclusions`);
   revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/exclusions`, "exclusion-saved"), RedirectType.replace);
 }
 
 const toggleSchema = z.object({
@@ -97,7 +100,7 @@ export async function setExclusionRuleActive(formData: FormData) {
     ruleId: valueFromForm(formData, "ruleId"),
     active: valueFromForm(formData, "active") || "true",
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   await db
     .update(exclusionRules)
@@ -106,6 +109,7 @@ export async function setExclusionRuleActive(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/exclusions`);
   revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/exclusions`, "exclusion-status"), RedirectType.replace);
 }
 
 const deleteSchema = z.object({
@@ -118,7 +122,7 @@ export async function deleteExclusionRule(formData: FormData) {
     orgSlug: valueFromForm(formData, "orgSlug"),
     ruleId: valueFromForm(formData, "ruleId"),
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   await db
     .delete(exclusionRules)
@@ -126,4 +130,5 @@ export async function deleteExclusionRule(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/exclusions`);
   revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/exclusions`, "exclusion-deleted"), RedirectType.replace);
 }

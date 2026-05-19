@@ -2,11 +2,13 @@
 
 import { and, eq, or, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
-import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { requireOrganisationRoleForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
 import { landingPages, trainingModules } from "@/lib/db/schema";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 const landingPageSchema = z.object({
   orgSlug: z.string().min(1),
@@ -41,7 +43,7 @@ export async function saveLandingPage(formData: FormData) {
     html: valueFromForm(formData, "html"),
     linkedTrainingModuleId: valueFromForm(formData, "linkedTrainingModuleId") || undefined,
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   if (data.linkedTrainingModuleId) {
     const [training] = await db
@@ -108,4 +110,34 @@ export async function saveLandingPage(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/landing-pages`);
   revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/landing-pages`, "landing-page-saved"), RedirectType.replace);
+}
+
+const deleteLandingPageSchema = z.object({
+  orgSlug: z.string().min(1),
+  pageId: z.string().min(1),
+});
+
+export async function deleteLandingPage(formData: FormData) {
+  const data = deleteLandingPageSchema.parse({
+    orgSlug: valueFromForm(formData, "orgSlug"),
+    pageId: valueFromForm(formData, "pageId"),
+  });
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
+
+  const [page] = await db
+    .select({ id: landingPages.id, organisationId: landingPages.organisationId })
+    .from(landingPages)
+    .where(eq(landingPages.id, data.pageId))
+    .limit(1);
+
+  if (!page || page.organisationId !== organisation.id) {
+    throw new Error("Only custom landing pages can be deleted.");
+  }
+
+  await db.delete(landingPages).where(and(eq(landingPages.id, data.pageId), eq(landingPages.organisationId, organisation.id)));
+
+  revalidatePath(`/${data.orgSlug}/landing-pages`);
+  revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/landing-pages`, "landing-page-deleted"), RedirectType.replace);
 }

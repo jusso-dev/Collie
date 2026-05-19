@@ -20,7 +20,6 @@ import { ReactNode } from "react";
 
 import { CollieLogo } from "@/components/app/collie-logo";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -31,6 +30,7 @@ import {
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { signOut } from "@/lib/auth/client";
 import { cn } from "@/lib/utils";
+import { FlashToast } from "@/components/app/flash-toast";
 
 const navItems = [
   { label: "Dashboard", href: "dashboard", icon: LayoutDashboard },
@@ -54,7 +54,7 @@ function SidebarNav({ orgSlug }: { orgSlug: string }) {
       {navItems.map((item) => {
         const Icon = item.icon;
         const href = `/${orgSlug}/${item.href}`;
-        const active = pathname === href;
+        const active = pathname === href || pathname.startsWith(`${href}/`);
 
         return (
           <Link
@@ -82,14 +82,21 @@ export function AppShell({
   children: ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const organisationName = orgSlug
     .split("-")
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+  const activeItem =
+    navItems.find((item) => {
+      const href = `/${orgSlug}/${item.href}`;
+      return pathname === href || pathname.startsWith(`${href}/`);
+    }) ?? navItems[0];
 
   return (
     <div className="min-h-dvh bg-background lg:grid lg:grid-cols-[16rem_minmax(0,1fr)]">
+      <FlashToast />
       <aside className="hidden border-r border-sidebar-border bg-sidebar lg:block">
         <div className="sticky top-0 flex h-dvh flex-col">
           <div className="flex h-16 items-center border-b border-sidebar-border px-5">
@@ -97,13 +104,7 @@ export function AppShell({
           </div>
           <div className="px-5 py-4">
             <div className="rounded-lg border border-sidebar-border bg-[rgb(252_253_255_/_0.07)] px-3 py-3 text-sidebar-foreground">
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{organisationName || "Organisation"}</p>
-                  <p className="text-xs text-sidebar-foreground/62">Data region: AU</p>
-                </div>
-                <Badge className="bg-[var(--collie-orange)] text-[var(--collie-white)]">Setup</Badge>
-              </div>
+              <p className="truncate text-sm font-medium">{organisationName || "Organisation"}</p>
             </div>
           </div>
           <SidebarNav orgSlug={orgSlug} />
@@ -125,12 +126,17 @@ export function AppShell({
                 <div className="flex h-16 items-center border-b border-sidebar-border px-5">
                   <CollieLogo variant="dark" />
                 </div>
+                <div className="px-5 py-4">
+                  <div className="rounded-lg border border-sidebar-border bg-[rgb(252_253_255_/_0.07)] px-3 py-3 text-sidebar-foreground">
+                    <p className="truncate text-sm font-medium">{organisationName || "Organisation"}</p>
+                  </div>
+                </div>
                 <SidebarNav orgSlug={orgSlug} />
               </SheetContent>
             </Sheet>
             <div>
-              <p className="text-sm font-medium capitalize">{orgSlug.replaceAll("-", " ")}</p>
-              <p className="text-xs text-muted-foreground">Herd your humans to safer habits</p>
+              <p className="text-sm font-medium">{activeItem.label}</p>
+              <p className="text-xs text-muted-foreground">{organisationName || "Organisation"}</p>
             </div>
           </div>
 

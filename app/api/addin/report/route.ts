@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { db } from "@/lib/db/client";
-import { employees, realMailReports } from "@/lib/db/schema";
+import { campaignTargets, employees, realMailReports } from "@/lib/db/schema";
 import { enqueueRealMailReportPush } from "@/lib/integrations/siem-soar";
 import { recordTrackingEvent } from "@/lib/tracking/record-event";
 
@@ -81,6 +81,32 @@ function senderAddress(fromAddress: string) {
   return (match?.[1] ?? fromAddress).trim().toLowerCase();
 }
 
+async function reportersForEmail(email: string) {
+  return db
+    .select({
+      id: employees.id,
+      email: employees.email,
+      organisationId: employees.organisationId,
+    })
+    .from(employees)
+    .where(and(eq(employees.email, email.toLowerCase()), eq(employees.active, true)))
+    .limit(2);
+}
+
+async function targetTenantForToken(token: string) {
+  const [target] = await db
+    .select({
+      employeeId: campaignTargets.employeeId,
+      organisationId: employees.organisationId,
+    })
+    .from(campaignTargets)
+    .innerJoin(employees, eq(employees.id, campaignTargets.employeeId))
+    .where(eq(campaignTargets.uniqueToken, token))
+    .limit(1);
+
+  return target ?? null;
+}
+
 export async function POST(request: NextRequest) {
   const json = await request.json().catch(() => null);
   const parsed = reportSchema.safeParse(json);
@@ -104,20 +130,24 @@ export async function POST(request: NextRequest) {
     source,
   } = parsed.data;
 
-  const reporter = await db.query.employees.findFirst({
-    where: eq(employees.email, reporterEmail.toLowerCase()),
-  });
-
-  if (!reporter) {
-    return jsonResponse(
-      { error: "Reporter is not recognised. Contact your security administrator." },
-      404,
-    );
-  }
-
   const token = extractToken(headersRaw, subject, bodyText, bodyHtml, fromAddress);
+  const reporterRows = await reportersForEmail(reporterEmail);
 
   if (token) {
+    const targetTenant = await targetTenantForToken(token);
+    const tokenReporter = targetTenant
+      ? reporterRows.find((reporter) => reporter.organisationId === targetTenant.organisationId)
+      : reporterRows.length === 1
+        ? reporterRows[0]
+        : null;
+
+    if (targetTenant && !tokenReporter) {
+      return jsonResponse(
+        { error: "Reporter is not recognised for this simulation tenant." },
+        404,
+      );
+    }
+
     const target = await recordTrackingEvent({
       token,
       eventType: "reported",
@@ -129,35 +159,36 @@ export async function POST(request: NextRequest) {
         subject,
         from: fromAddress,
         messageId,
-        reporterEmail: reporter.email,
-        reporterEmployeeId: reporter.id,
+        reporterEmail: tokenReporter?.email ?? reporterEmail.toLowerCase(),
+        reporterEmployeeId: tokenReporter?.id ?? null,
       },
     });
 
     if (target) {
-      // Confirm the simulated phish belongs to the reporter's tenant before
-      // returning the simulation response. If not, fall through to real-mail.
-      const sameTenant = await db
-        .select({ id: employees.id })
-        .from(employees)
-        .where(
-          and(
-            eq(employees.id, target.employeeId),
-            eq(employees.organisationId, reporter.organisationId),
-          ),
-        )
-        .limit(1);
-
-      if (sameTenant.length > 0) {
-        return jsonResponse({
-          ok: true,
-          matched: "simulation",
-          message:
-            "Nice work — this was a Collie phishing simulation and your report has been recorded.",
-        });
-      }
+      return jsonResponse({
+        ok: true,
+        matched: "simulation",
+        message:
+          "Nice work, this was a Collie phishing simulation and your report has been recorded.",
+      });
     }
   }
+
+  if (reporterRows.length === 0) {
+    return jsonResponse(
+      { error: "Reporter is not recognised. Contact your security administrator." },
+      404,
+    );
+  }
+
+  if (reporterRows.length > 1) {
+    return jsonResponse(
+      { error: "Reporter belongs to more than one tenant. Include the original Collie token in the report." },
+      409,
+    );
+  }
+
+  const reporter = reporterRows[0];
 
   const [inserted] = await db
     .insert(realMailReports)

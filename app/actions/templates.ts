@@ -2,11 +2,13 @@
 
 import { and, eq, or, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { redirect, RedirectType } from "next/navigation";
 import { z } from "zod";
 
-import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { requireOrganisationRoleForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
 import { emailTemplates, trainingModules } from "@/lib/db/schema";
+import { pathWithToast } from "@/lib/navigation/toast";
 
 const templateSchema = z.object({
   orgSlug: z.string().min(1),
@@ -65,7 +67,7 @@ export async function saveEmailTemplate(formData: FormData) {
     region: valueFromForm(formData, "region") || "au",
     linkedTrainingModuleId: valueFromForm(formData, "linkedTrainingModuleId") || undefined,
   });
-  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
 
   if (data.linkedTrainingModuleId) {
     const [training] = await db
@@ -131,4 +133,34 @@ export async function saveEmailTemplate(formData: FormData) {
 
   revalidatePath(`/${data.orgSlug}/templates`);
   revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/templates`, "template-saved"), RedirectType.replace);
+}
+
+const deleteTemplateSchema = z.object({
+  orgSlug: z.string().min(1),
+  templateId: z.string().min(1),
+});
+
+export async function deleteEmailTemplate(formData: FormData) {
+  const data = deleteTemplateSchema.parse({
+    orgSlug: valueFromForm(formData, "orgSlug"),
+    templateId: valueFromForm(formData, "templateId"),
+  });
+  const organisation = await requireOrganisationRoleForSlug(data.orgSlug, ["owner", "admin"]);
+
+  const [template] = await db
+    .select({ id: emailTemplates.id, name: emailTemplates.name, organisationId: emailTemplates.organisationId })
+    .from(emailTemplates)
+    .where(eq(emailTemplates.id, data.templateId))
+    .limit(1);
+
+  if (!template || template.organisationId !== organisation.id) {
+    throw new Error("Only custom templates can be deleted.");
+  }
+
+  await db.delete(emailTemplates).where(and(eq(emailTemplates.id, data.templateId), eq(emailTemplates.organisationId, organisation.id)));
+
+  revalidatePath(`/${data.orgSlug}/templates`);
+  revalidatePath(`/${data.orgSlug}/campaigns`);
+  redirect(pathWithToast(`/${data.orgSlug}/templates`, "template-deleted"), RedirectType.replace);
 }

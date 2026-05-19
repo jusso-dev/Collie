@@ -76,6 +76,20 @@ const siemSoarEventOptions = [
   { value: "real_mail_report", label: "Real-mail report" },
 ] as const;
 
+const settingsTabs = [
+  { value: "team", label: "Team" },
+  { value: "sending", label: "Sending" },
+  { value: "identity", label: "Identity" },
+  { value: "training", label: "Training" },
+  { value: "integrations", label: "Integrations" },
+  { value: "compliance", label: "Compliance" },
+] as const;
+
+type SettingsTab = (typeof settingsTabs)[number]["value"];
+type SearchParams = {
+  tab?: string;
+};
+
 function safeOpen(sealed: string | null): string | null {
   if (!sealed) return null;
   try {
@@ -87,11 +101,15 @@ function safeOpen(sealed: string | null): string | null {
 
 export default async function SettingsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ orgSlug: string }>;
+  searchParams: Promise<SearchParams>;
 }) {
   const { orgSlug } = await params;
+  const search = await searchParams;
   const organisation = await requireOrganisationForSlug(orgSlug);
+  const activeTab = settingsTabs.some((tab) => tab.value === search.tab) ? (search.tab as SettingsTab) : "team";
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL || process.env.BETTER_AUTH_URL || "http://localhost:3000").replace(/\/$/, "");
   const reportMailbox = buildOrganisationReportAddress(orgSlug);
   const tokenisedReplyPattern = buildCampaignReportAddress("{token}");
@@ -241,6 +259,22 @@ export default async function SettingsPage({
           Manage organisation access, account security, and email sending credentials.
         </p>
       </div>
+      <nav className="flex flex-wrap gap-2 rounded-lg border border-border bg-card p-2" aria-label="Settings sections">
+        {settingsTabs.map((tab) => (
+          <Link
+            key={tab.value}
+            href={`/${orgSlug}/settings?tab=${tab.value}`}
+            className={
+              activeTab === tab.value
+                ? buttonVariants({ variant: "default", size: "sm" })
+                : buttonVariants({ variant: "outline", size: "sm" })
+            }
+          >
+            {tab.label}
+          </Link>
+        ))}
+      </nav>
+      {activeTab === "team" ? (
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
@@ -414,6 +448,9 @@ export default async function SettingsPage({
           </table>
         </div>
       </div>
+      ) : null}
+      {activeTab === "sending" ? (
+      <>
       <EmailSendingSettings
         orgSlug={orgSlug}
         initialTransport={organisation.sendingTransport}
@@ -427,6 +464,23 @@ export default async function SettingsPage({
         smtpFromAddress={organisation.smtpFromAddress}
         testRecipientDefault={null}
       />
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-5 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="font-medium">Deliverability allowlist guide</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Per-provider rules for M365 Advanced Delivery, Mimecast, and Proofpoint TAP that stop simulation mail from being blocked or rewritten.
+          </p>
+        </div>
+        <Link
+          href={`/${orgSlug}/deliverability`}
+          className={buttonVariants({ variant: "outline", size: "default" })}
+        >
+          Open allowlist guide
+        </Link>
+      </div>
+      </>
+      ) : null}
+      {activeTab === "training" ? (
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
@@ -475,6 +529,8 @@ export default async function SettingsPage({
           </div>
         </form>
       </div>
+      ) : null}
+      {activeTab === "compliance" ? (
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
@@ -514,27 +570,16 @@ export default async function SettingsPage({
           <Button type="submit">Save retention</Button>
         </form>
       </div>
-      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-5 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 className="font-medium">Deliverability allowlist guide</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Per-provider rules for M365 Advanced Delivery, Mimecast, and Proofpoint TAP that stop simulation mail from being blocked or rewritten.
-          </p>
-        </div>
-        <Link
-          href={`/${orgSlug}/deliverability`}
-          className={buttonVariants({ variant: "outline", size: "default" })}
-        >
-          Open allowlist guide
-        </Link>
-      </div>
+      ) : null}
+      {activeTab === "integrations" ? (
       <ScimTokenCard
         orgSlug={orgSlug}
         endpointUrl={`${appUrl}/api/scim/v2`}
         hasToken={Boolean(scimState?.scimTokenHash)}
         issuedAt={scimState?.scimTokenIssuedAt ?? null}
       />
-
+      ) : null}
+      {activeTab === "identity" ? (
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
@@ -684,6 +729,9 @@ export default async function SettingsPage({
           </div>
         ) : null}
       </div>
+      ) : null}
+      {activeTab === "integrations" ? (
+      <>
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
@@ -1234,6 +1282,8 @@ export default async function SettingsPage({
           <Badge variant="outline">On the roadmap</Badge>
         </div>
       </div>
+      </>
+      ) : null}
     </div>
   );
 }

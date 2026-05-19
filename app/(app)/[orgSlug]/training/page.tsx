@@ -1,6 +1,6 @@
 import { eq, or, sql } from "drizzle-orm";
 
-import { saveTrainingModule } from "@/app/actions/training";
+import { deleteTrainingModule, importScormModule, saveTrainingModule } from "@/app/actions/training";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,6 +33,26 @@ export default async function TrainingPage({
           Inspect and adapt short lessons that explain what to notice next time, with a default pass threshold of 2 from 3.
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Import SCORM package</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form action={importScormModule} className="grid gap-4 md:grid-cols-[minmax(260px,1fr)_auto] md:items-end">
+            <input type="hidden" name="orgSlug" value={orgSlug} />
+            <div className="space-y-2">
+              <Label htmlFor="scormPackage">SCORM ZIP</Label>
+              <Input id="scormPackage" name="scormPackage" type="file" accept=".zip,application/zip" required />
+              <p className="text-xs leading-5 text-muted-foreground">
+                Imports SCORM 1.2 style ZIPs with an imsmanifest.xml file. Collie reads the package title and launch HTML,
+                then saves it as a custom interactive module for campaigns and landing pages.
+              </p>
+            </div>
+            <Button type="submit">Import module</Button>
+          </form>
+        </CardContent>
+      </Card>
 
       <div className="space-y-3">
         {modules.map((module) => (
@@ -115,8 +135,19 @@ export default async function TrainingPage({
                       <Label htmlFor={`content-${module.id}`}>Lesson HTML</Label>
                       <Textarea id={`content-${module.id}`} name="contentHtml" defaultValue={module.contentHtml ?? ""} rows={6} required />
                     </div>
-                    <Button type="submit">{module.organisationId ? "Save changes" : "Create custom copy"}</Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="submit">{module.organisationId ? "Save changes" : "Create custom copy"}</Button>
+                    </div>
                   </form>
+                  {module.organisationId ? (
+                    <form action={deleteTrainingModule} className="mt-3">
+                      <input type="hidden" name="orgSlug" value={orgSlug} />
+                      <input type="hidden" name="moduleId" value={module.id} />
+                      <Button type="submit" variant="outline">
+                        Delete module
+                      </Button>
+                    </form>
+                  ) : null}
                 </CardContent>
               </Card>
             </div>

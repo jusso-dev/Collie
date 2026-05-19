@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import Link from "next/link";
 
-import { markTargetEvent, updateCampaignStatus } from "@/app/actions/campaigns";
+import { deleteCampaign, launchCampaign, markTargetEvent, updateCampaignStatus } from "@/app/actions/campaigns";
 import { recordDeepfakeCampaignApproval, registerDeepfakeAsset } from "@/app/actions/deepfake";
 import { AutoRefresh } from "@/components/app/auto-refresh";
 import { Badge } from "@/components/ui/badge";
@@ -217,6 +217,17 @@ export default async function CampaignResultsPage({
     });
   const warning = trackingUrlWarning();
   const liveRefreshEnabled = !["completed", "cancelled"].includes(campaign.status);
+  const sendingConfigured =
+    organisation.sendingTransport === "smtp"
+      ? Boolean(
+          organisation.smtpHost &&
+            organisation.smtpPort &&
+            organisation.smtpUsernameEncrypted &&
+            organisation.smtpPasswordEncrypted &&
+            (organisation.smtpFromAddress || organisation.senderFromAddress),
+        )
+      : Boolean(organisation.resendApiKeyEncrypted && organisation.senderFromAddress);
+  const launchable = ["draft", "scheduled", "paused"].includes(campaign.status);
   const now = new Date();
   const isDeepfakeCampaign =
     campaign.templateCategory === "deepfake_exec" ||
@@ -514,10 +525,44 @@ export default async function CampaignResultsPage({
           <CardTitle>Controls</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
+          <form action={launchCampaign}>
+            <input type="hidden" name="orgSlug" value={orgSlug} />
+            <input type="hidden" name="campaignId" value={campaign.id} />
+            <input type="hidden" name="mode" value="sync" />
+            <Button
+              type="submit"
+              disabled={!sendingConfigured || !launchable}
+              title={
+                sendingConfigured
+                  ? "Send immediately from this request. Out-of-hours targets are still deferred to the next valid slot."
+                  : "Configure sending in Settings before launch."
+              }
+            >
+              Start now
+            </Button>
+          </form>
+          <form action={launchCampaign}>
+            <input type="hidden" name="orgSlug" value={orgSlug} />
+            <input type="hidden" name="campaignId" value={campaign.id} />
+            <input type="hidden" name="mode" value="async" />
+            <Button
+              type="submit"
+              variant="outline"
+              disabled={!sendingConfigured || !launchable}
+              title={
+                sendingConfigured
+                  ? "Queue launch through Inngest. Retries, idempotency, and working-hours clamping all apply."
+                  : "Configure sending in Settings before launch."
+              }
+            >
+              Launch queued
+            </Button>
+          </form>
           <form action={updateCampaignStatus}>
             <input type="hidden" name="orgSlug" value={orgSlug} />
             <input type="hidden" name="campaignId" value={campaign.id} />
             <input type="hidden" name="status" value="completed" />
+            <input type="hidden" name="returnTo" value={`/${orgSlug}/campaigns/${campaign.id}`} />
             <Button type="submit" variant="outline" disabled={campaign.status === "completed"}>
               Complete campaign
             </Button>
@@ -526,8 +571,16 @@ export default async function CampaignResultsPage({
             <input type="hidden" name="orgSlug" value={orgSlug} />
             <input type="hidden" name="campaignId" value={campaign.id} />
             <input type="hidden" name="status" value="cancelled" />
+            <input type="hidden" name="returnTo" value={`/${orgSlug}/campaigns/${campaign.id}`} />
             <Button type="submit" variant="outline" disabled={campaign.status === "cancelled"}>
               Cancel campaign
+            </Button>
+          </form>
+          <form action={deleteCampaign}>
+            <input type="hidden" name="orgSlug" value={orgSlug} />
+            <input type="hidden" name="campaignId" value={campaign.id} />
+            <Button type="submit" variant="outline">
+              Delete campaign
             </Button>
           </form>
           <Link className={buttonVariants({ variant: "outline" })} href={`/${orgSlug}/reports/export`}>
@@ -598,6 +651,7 @@ export default async function CampaignResultsPage({
                           <input type="hidden" name="orgSlug" value={orgSlug} />
                           <input type="hidden" name="token" value={target.token} />
                           <input type="hidden" name="eventType" value="reported" />
+                          <input type="hidden" name="returnTo" value={`/${orgSlug}/campaigns/${campaign.id}`} />
                           <button className="font-medium text-primary underline-offset-4 hover:underline" type="submit">
                             Mark reported
                           </button>

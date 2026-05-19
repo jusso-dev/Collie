@@ -1,6 +1,6 @@
 import { eq, or, sql } from "drizzle-orm";
 
-import { saveEmailTemplate } from "@/app/actions/templates";
+import { deleteEmailTemplate, saveEmailTemplate } from "@/app/actions/templates";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -223,6 +223,15 @@ export default async function TemplatesPage({
                     </div>
                     <Button type="submit">{template.organisationId ? "Save changes" : "Create custom copy"}</Button>
                   </form>
+                  {template.organisationId ? (
+                    <form action={deleteEmailTemplate} className="mt-3">
+                      <input type="hidden" name="orgSlug" value={orgSlug} />
+                      <input type="hidden" name="templateId" value={template.id} />
+                      <Button type="submit" variant="outline">
+                        Delete template
+                      </Button>
+                    </form>
+                  ) : null}
                 </CardContent>
               </Card>
               <Card>
