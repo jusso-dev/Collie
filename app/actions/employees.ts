@@ -6,7 +6,8 @@ import { z } from "zod";
 
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
-import { employees } from "@/lib/db/schema";
+import { employees, employeeSyncRuns } from "@/lib/db/schema";
+import { ingestEmployees, parseEmployeesCsv } from "@/lib/employees/ingest";
 
 const employeeSchema = z.object({
   orgSlug: z.string().min(1),
@@ -73,130 +74,40 @@ export async function createEmployee(formData: FormData) {
   revalidatePath(`/${data.orgSlug}/dashboard`);
 }
 
-function parseCsvLine(line: string) {
-  const cells: string[] = [];
-  let cell = "";
-  let quoted = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    const next = line[index + 1];
-
-    if (character === '"' && quoted && next === '"') {
-      cell += '"';
-      index += 1;
-      continue;
-    }
-
-    if (character === '"') {
-      quoted = !quoted;
-      continue;
-    }
-
-    if (character === "," && !quoted) {
-      cells.push(cell.trim());
-      cell = "";
-      continue;
-    }
-
-    cell += character;
-  }
-
-  cells.push(cell.trim());
-  return cells;
-}
-
-function normaliseHeader(header: string) {
-  return header.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function getCell(row: Record<string, string>, ...keys: string[]) {
-  for (const key of keys) {
-    const value = row[normaliseHeader(key)];
-    if (value) return value.trim();
-  }
-
-  return "";
-}
-
-function nameFromEmail(email: string) {
-  const local = email.split("@")[0] ?? "";
-  const parts = local.split(/[._-]+/).filter(Boolean);
-  const firstName = parts[0] ? parts[0][0].toUpperCase() + parts[0].slice(1) : "Employee";
-  const lastName = parts[1] ? parts[1][0].toUpperCase() + parts[1].slice(1) : "Imported";
-
-  return { firstName, lastName };
-}
-
 export async function importEmployeesCsv(formData: FormData) {
   const orgSlug = valueFromForm(formData, "orgSlug");
   const csv = valueFromForm(formData, "csv");
   const organisation = await requireOrganisationForSlug(orgSlug);
-  const lines = csv
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
 
-  if (lines.length < 2) {
-    throw new Error("CSV import needs a header row and at least one employee.");
+  const { rows, errors } = parseEmployeesCsv(csv);
+
+  if (rows.length === 0) {
+    throw new Error(errors[0]?.reason ?? "No employees with email addresses were found in the CSV.");
   }
 
-  const headers = parseCsvLine(lines[0]).map(normaliseHeader);
-  const rows = lines.slice(1).map((line) => {
-    const cells = parseCsvLine(line);
-    return headers.reduce<Record<string, string>>((row, header, index) => {
-      row[header] = cells[index] ?? "";
-      return row;
-    }, {});
+  const result = await ingestEmployees({
+    organisationId: organisation.id,
+    mode: "bulk_incremental",
+    rows,
+    parseErrors: errors,
   });
 
-  const values = rows
-    .map((row) => {
-      const email = getCell(row, "email", "work email").toLowerCase();
-      if (!email) return null;
-
-      const fallback = nameFromEmail(email);
-      const firstName = getCell(row, "first_name", "first name", "firstName") || fallback.firstName;
-      const lastName = getCell(row, "last_name", "last name", "lastName") || fallback.lastName;
-
-      return {
-        organisationId: organisation.id,
-        email,
-        firstName,
-        lastName,
-        department: getCell(row, "department") || null,
-        managerEmail: getCell(row, "manager_email", "manager email", "managerEmail") || null,
-        language: getCell(row, "language") || "en-AU",
-        timezone: getCell(row, "timezone") || "Australia/Sydney",
-      };
-    })
-    .filter((row): row is NonNullable<typeof row> => Boolean(row));
-
-  if (values.length === 0) {
-    throw new Error("No employees with email addresses were found in the CSV.");
-  }
-
-  for (const value of values) {
-    await db
-      .insert(employees)
-      .values(value)
-      .onConflictDoUpdate({
-        target: [employees.organisationId, employees.email],
-        set: {
-          firstName: value.firstName,
-          lastName: value.lastName,
-          department: value.department,
-          managerEmail: value.managerEmail,
-          language: value.language,
-          timezone: value.timezone,
-          active: true,
-          updatedAt: new Date(),
-        },
-      });
-  }
+  await db.insert(employeeSyncRuns).values({
+    organisationId: organisation.id,
+    mode: "bulk_incremental",
+    source: "ui_csv_upload",
+    actorKeyLast4: null,
+    receivedCount: result.received,
+    addedCount: result.added,
+    updatedCount: result.updated,
+    deactivatedCount: result.deactivated,
+    skippedCount: result.skipped,
+    errors: result.errors.slice(0, 50),
+  });
 
   revalidatePath(`/${orgSlug}/employees`);
   revalidatePath(`/${orgSlug}/dashboard`);
+  revalidatePath(`/${orgSlug}/settings`);
 }
 
 export async function setEmployeeActive(formData: FormData) {

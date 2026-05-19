@@ -103,11 +103,16 @@ export const organisations = pgTable(
     scimTokenEncrypted: text("scim_token_encrypted"),
     scimTokenHash: text("scim_token_hash"),
     scimTokenIssuedAt: timestamp("scim_token_issued_at", { withTimezone: true }),
+    apiKeyEncrypted: text("api_key_encrypted"),
+    apiKeyHash: text("api_key_hash"),
+    apiKeyLast4: text("api_key_last4"),
+    apiKeyCreatedAt: timestamp("api_key_created_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("organisations_slug_idx").on(table.slug),
     uniqueIndex("organisations_scim_token_hash_idx").on(table.scimTokenHash),
+    uniqueIndex("organisations_api_key_hash_idx").on(table.apiKeyHash),
   ],
 );
 
@@ -528,6 +533,33 @@ export const ssoConfigurations = pgTable(
   (table) => [uniqueIndex("sso_configurations_org_idx").on(table.organisationId)],
 );
 
+export const employeeSyncMode = pgEnum("employee_sync_mode", [
+  "single",
+  "bulk_incremental",
+  "bulk_full",
+]);
+
+export const employeeSyncRuns = pgTable(
+  "employee_sync_runs",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    mode: employeeSyncMode("mode").notNull(),
+    source: text("source").default("api").notNull(),
+    actorKeyLast4: text("actor_key_last4"),
+    receivedCount: integer("received_count").default(0).notNull(),
+    addedCount: integer("added_count").default(0).notNull(),
+    updatedCount: integer("updated_count").default(0).notNull(),
+    deactivatedCount: integer("deactivated_count").default(0).notNull(),
+    skippedCount: integer("skipped_count").default(0).notNull(),
+    errors: jsonb("errors").$type<Array<{ index?: number; email?: string; reason: string }>>().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("employee_sync_runs_org_idx").on(table.organisationId, table.createdAt)],
+);
+
 export const organisationsRelations = relations(organisations, ({ many }) => ({
   users: many(users),
   employees: many(employees),
@@ -535,11 +567,19 @@ export const organisationsRelations = relations(organisations, ({ many }) => ({
   campaigns: many(campaigns),
   invitations: many(organisationInvitations),
   exclusionRules: many(exclusionRules),
+  employeeSyncRuns: many(employeeSyncRuns),
 }));
 
 export const exclusionRulesRelations = relations(exclusionRules, ({ one }) => ({
   organisation: one(organisations, {
     fields: [exclusionRules.organisationId],
+    references: [organisations.id],
+  }),
+}));
+
+export const employeeSyncRunsRelations = relations(employeeSyncRuns, ({ one }) => ({
+  organisation: one(organisations, {
+    fields: [employeeSyncRuns.organisationId],
     references: [organisations.id],
   }),
 }));
