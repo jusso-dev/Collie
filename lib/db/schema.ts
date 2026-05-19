@@ -93,9 +93,15 @@ export const organisations = pgTable(
     smtpPasswordEncrypted: text("smtp_password_encrypted"),
     smtpSecure: boolean("smtp_secure").default(true).notNull(),
     smtpFromAddress: text("smtp_from_address"),
+    scimTokenEncrypted: text("scim_token_encrypted"),
+    scimTokenHash: text("scim_token_hash"),
+    scimTokenIssuedAt: timestamp("scim_token_issued_at", { withTimezone: true }),
     ...timestamps,
   },
-  (table) => [uniqueIndex("organisations_slug_idx").on(table.slug)],
+  (table) => [
+    uniqueIndex("organisations_slug_idx").on(table.slug),
+    uniqueIndex("organisations_scim_token_hash_idx").on(table.scimTokenHash),
+  ],
 );
 
 export const users = pgTable(
@@ -220,11 +226,13 @@ export const employees = pgTable(
     excluded: boolean("excluded").default(false).notNull(),
     exclusionReason: text("exclusion_reason"),
     excludedUntil: timestamp("excluded_until", { withTimezone: true }),
+    scimExternalId: text("scim_external_id"),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("employees_org_email_idx").on(table.organisationId, table.email),
     index("employees_org_idx").on(table.organisationId),
+    uniqueIndex("employees_org_scim_external_id_idx").on(table.organisationId, table.scimExternalId),
   ],
 );
 
@@ -236,9 +244,13 @@ export const groups = pgTable(
       .notNull()
       .references(() => organisations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    scimExternalId: text("scim_external_id"),
     ...timestamps,
   },
-  (table) => [uniqueIndex("groups_org_name_idx").on(table.organisationId, table.name)],
+  (table) => [
+    uniqueIndex("groups_org_name_idx").on(table.organisationId, table.name),
+    uniqueIndex("groups_org_scim_external_id_idx").on(table.organisationId, table.scimExternalId),
+  ],
 );
 
 export const employeeGroups = pgTable(
