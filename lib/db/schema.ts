@@ -66,6 +66,7 @@ export const assignmentSource = pgEnum("assignment_source", [
   "scheduled",
   "manual",
 ]);
+export const sendingTransport = pgEnum("sending_transport", ["resend", "smtp"]);
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -85,6 +86,13 @@ export const organisations = pgTable(
     resendApiKeyEncrypted: text("resend_api_key_encrypted"),
     senderFromAddress: text("sender_from_address"),
     auditRetentionDays: integer("audit_retention_days").default(395).notNull(),
+    sendingTransport: sendingTransport("sending_transport").default("resend").notNull(),
+    smtpHost: text("smtp_host"),
+    smtpPort: integer("smtp_port"),
+    smtpUsernameEncrypted: text("smtp_username_encrypted"),
+    smtpPasswordEncrypted: text("smtp_password_encrypted"),
+    smtpSecure: boolean("smtp_secure").default(true).notNull(),
+    smtpFromAddress: text("smtp_from_address"),
     ...timestamps,
   },
   (table) => [uniqueIndex("organisations_slug_idx").on(table.slug)],
