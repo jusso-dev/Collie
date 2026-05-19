@@ -10,6 +10,18 @@ export function FlashToast() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const initialToast = useMemo<{ kind: ToastKind; message: string } | null>(() => {
+    const enqueued = searchParams.get("enqueued");
+    if (enqueued) {
+      const count = Number(enqueued);
+      return {
+        kind: "success",
+        message:
+          Number.isFinite(count) && count > 0
+            ? `Campaign launch queued. Inngest will deliver ${count} email${count === 1 ? "" : "s"} with retries and idempotency.`
+            : "Campaign launch queued. Inngest will deliver the emails.",
+      };
+    }
+
     const sent = searchParams.get("sent");
     if (sent) {
       const count = Number(sent);
@@ -44,6 +56,7 @@ export function FlashToast() {
     nextParams.delete("sent");
     nextParams.delete("scheduled");
     nextParams.delete("created");
+    nextParams.delete("enqueued");
     const nextQuery = nextParams.toString();
     router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false });
 

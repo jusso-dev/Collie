@@ -450,12 +450,19 @@ export const events = pgTable(
       .notNull()
       .references(() => campaignTargets.id, { onDelete: "cascade" }),
     eventType: eventType("event_type").notNull(),
+    messageId: text("message_id"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [index("events_target_idx").on(table.campaignTargetId), index("events_type_idx").on(table.eventType)],
+  (table) => [
+    index("events_target_idx").on(table.campaignTargetId),
+    index("events_type_idx").on(table.eventType),
+    uniqueIndex("events_message_id_uidx")
+      .on(table.messageId)
+      .where(sql`${table.messageId} is not null`),
+  ],
 );
 
 export type RealMailReportAttachment = {
