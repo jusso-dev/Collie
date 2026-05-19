@@ -1,5 +1,11 @@
 import { and, eq } from "drizzle-orm";
 
+import {
+  DEFAULT_WORKING_WINDOW,
+  isInsideWorkingWindow,
+  nextAllowedSendTime,
+  type WorkingWindow,
+} from "@/lib/campaigns/schedule";
 import { db } from "@/lib/db/client";
 import { campaignTargets, campaigns, emailTemplates, employees, events, organisations } from "@/lib/db/schema";
 import { sendCampaignEmail } from "@/lib/email/campaign-sender";
@@ -9,6 +15,32 @@ type OrganisationSendConfig = {
   name: string;
   senderFromAddress: string | null;
   resendApiKeyEncrypted: string | null;
+};
+
+type LoadedCampaign = {
+  id: string;
+  name: string;
+  status: string;
+  templateId: string | null;
+  templateSubject: string | null;
+  templateHtml: string | null;
+  templateText: string | null;
+  workingHoursStart: number;
+  workingHoursEnd: number;
+  workingDays: number[];
+  respectEmployeeTimezone: boolean;
+};
+
+type TargetRow = {
+  id: string;
+  token: string;
+  sentAt: Date | null;
+  scheduledAt: Date | null;
+  employeeEmail: string;
+  firstName: string;
+  lastName: string;
+  department?: string | null;
+  employeeTimezone: string | null;
 };
 
 async function loadSendableCampaign(organisationId: string, campaignId: string) {
@@ -21,6 +53,10 @@ async function loadSendableCampaign(organisationId: string, campaignId: string) 
       templateSubject: emailTemplates.subject,
       templateHtml: emailTemplates.htmlBody,
       templateText: emailTemplates.textBody,
+      workingHoursStart: campaigns.workingHoursStart,
+      workingHoursEnd: campaigns.workingHoursEnd,
+      workingDays: campaigns.workingDays,
+      respectEmployeeTimezone: campaigns.respectEmployeeTimezone,
     })
     .from(campaigns)
     .leftJoin(emailTemplates, eq(emailTemplates.id, campaigns.emailTemplateId))
@@ -28,34 +64,51 @@ async function loadSendableCampaign(organisationId: string, campaignId: string) 
     .limit(1);
 }
 
+function windowFor(campaign: LoadedCampaign): WorkingWindow {
+  return {
+    startMinute: campaign.workingHoursStart,
+    endMinute: campaign.workingHoursEnd,
+    allowedIsoDays: campaign.workingDays?.length ? campaign.workingDays : DEFAULT_WORKING_WINDOW.allowedIsoDays,
+  };
+}
+
+function effectiveTimezone(campaign: LoadedCampaign, target: TargetRow): string | null {
+  if (!campaign.respectEmployeeTimezone) return null;
+  return target.employeeTimezone ?? "Australia/Sydney";
+}
+
 async function sendTarget(input: {
   organisation: OrganisationSendConfig;
-  campaign: {
-    id: string;
-    status: string;
-    templateId: string | null;
-    templateSubject: string | null;
-    templateHtml: string | null;
-    templateText: string | null;
-  };
-  target: {
-    id: string;
-    token: string;
-    sentAt: Date | null;
-    employeeEmail: string;
-    firstName: string;
-    lastName: string;
-    department?: string | null;
-  };
-}) {
+  campaign: LoadedCampaign;
+  target: TargetRow;
+  now?: Date;
+}): Promise<"sent" | "deferred" | "skipped"> {
   const { campaign, organisation, target } = input;
+  const now = input.now ?? new Date();
 
   if (!campaign.templateId || !campaign.templateSubject || !campaign.templateHtml || !campaign.templateText) {
     throw new Error("This campaign needs a valid template before it can be sent.");
   }
 
   if (target.sentAt) {
-    return false;
+    return "skipped";
+  }
+
+  if (target.scheduledAt && target.scheduledAt.getTime() > now.getTime()) {
+    return "deferred";
+  }
+
+  const timeZone = effectiveTimezone(campaign, target);
+  const window = windowFor(campaign);
+  if (timeZone && !isInsideWorkingWindow(now, timeZone, window)) {
+    const nextSlot = nextAllowedSendTime(now, timeZone, window);
+    if (nextSlot.getTime() !== target.scheduledAt?.getTime()) {
+      await db
+        .update(campaignTargets)
+        .set({ scheduledAt: nextSlot, updatedAt: now })
+        .where(eq(campaignTargets.id, target.id));
+    }
+    return "deferred";
   }
 
   const result = await sendCampaignEmail({
@@ -76,8 +129,7 @@ async function sendTarget(input: {
     token: target.token,
   });
 
-  const sentAt = new Date();
-  await db.update(campaignTargets).set({ sentAt, updatedAt: sentAt }).where(eq(campaignTargets.id, target.id));
+  await db.update(campaignTargets).set({ sentAt: now, updatedAt: now }).where(eq(campaignTargets.id, target.id));
   await db.insert(events).values({
     campaignTargetId: target.id,
     eventType: "sent",
@@ -89,10 +141,28 @@ async function sendTarget(input: {
       pixelUrl: result.pixelUrl,
       replyAddress: result.replyAddress,
     },
-    createdAt: sentAt,
+    createdAt: now,
   });
 
-  return true;
+  return "sent";
+}
+
+async function loadTargets(campaignId: string, organisationId: string): Promise<TargetRow[]> {
+  return db
+    .select({
+      id: campaignTargets.id,
+      token: campaignTargets.uniqueToken,
+      sentAt: campaignTargets.sentAt,
+      scheduledAt: campaignTargets.scheduledAt,
+      employeeEmail: employees.email,
+      firstName: employees.firstName,
+      lastName: employees.lastName,
+      department: employees.department,
+      employeeTimezone: employees.timezone,
+    })
+    .from(campaignTargets)
+    .innerJoin(employees, eq(employees.id, campaignTargets.employeeId))
+    .where(and(eq(campaignTargets.campaignId, campaignId), eq(employees.organisationId, organisationId)));
 }
 
 export async function sendCampaignNow(input: { organisation: OrganisationSendConfig; campaignId: string }) {
@@ -112,20 +182,7 @@ export async function sendCampaignNow(input: { organisation: OrganisationSendCon
     throw new Error("This campaign has already been launched.");
   }
 
-  const targets = await db
-    .select({
-      id: campaignTargets.id,
-      token: campaignTargets.uniqueToken,
-      sentAt: campaignTargets.sentAt,
-      employeeEmail: employees.email,
-      firstName: employees.firstName,
-      lastName: employees.lastName,
-      department: employees.department,
-    })
-    .from(campaignTargets)
-    .innerJoin(employees, eq(employees.id, campaignTargets.employeeId))
-    .where(and(eq(campaignTargets.campaignId, campaign.id), eq(employees.organisationId, organisation.id)));
-
+  const targets = await loadTargets(campaign.id, organisation.id);
   const unsentTargets = targets.filter((target) => !target.sentAt);
 
   if (unsentTargets.length === 0) {
@@ -134,11 +191,17 @@ export async function sendCampaignNow(input: { organisation: OrganisationSendCon
 
   await db.update(campaigns).set({ status: "running", updatedAt: new Date() }).where(eq(campaigns.id, campaign.id));
 
+  const now = new Date();
+  let sentCount = 0;
+  let deferredCount = 0;
+
   for (const target of unsentTargets) {
-    await sendTarget({ organisation, campaign, target });
+    const outcome = await sendTarget({ organisation, campaign, target, now });
+    if (outcome === "sent") sentCount += 1;
+    if (outcome === "deferred") deferredCount += 1;
   }
 
-  return { campaignId: campaign.id, sentCount: unsentTargets.length };
+  return { campaignId: campaign.id, sentCount, deferredCount };
 }
 
 export async function sendCampaignTargetNow(input: {
@@ -167,10 +230,12 @@ export async function sendCampaignTargetNow(input: {
       id: campaignTargets.id,
       token: campaignTargets.uniqueToken,
       sentAt: campaignTargets.sentAt,
+      scheduledAt: campaignTargets.scheduledAt,
       employeeEmail: employees.email,
       firstName: employees.firstName,
       lastName: employees.lastName,
       department: employees.department,
+      employeeTimezone: employees.timezone,
     })
     .from(campaignTargets)
     .innerJoin(employees, eq(employees.id, campaignTargets.employeeId))
@@ -188,9 +253,9 @@ export async function sendCampaignTargetNow(input: {
   }
 
   await db.update(campaigns).set({ status: "running", updatedAt: new Date() }).where(eq(campaigns.id, campaign.id));
-  const sent = await sendTarget({ organisation, campaign, target });
+  const outcome = await sendTarget({ organisation, campaign, target });
 
-  return { campaignId: campaign.id, sentCount: sent ? 1 : 0 };
+  return { campaignId: campaign.id, sentCount: outcome === "sent" ? 1 : 0, deferred: outcome === "deferred" };
 }
 
 export async function sendCampaignById(input: { organisationId: string; campaignId: string }) {

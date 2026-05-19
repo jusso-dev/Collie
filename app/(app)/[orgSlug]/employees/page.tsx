@@ -1,6 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 
-import { createEmployee, setEmployeeActive } from "@/app/actions/employees";
+import { createEmployee, setEmployeeActive, setEmployeeExclusion } from "@/app/actions/employees";
 import { EmployeeCsvImportForm } from "@/components/app/employee-csv-import-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,7 @@ export default async function EmployeesPage({
     .from(employees)
     .where(eq(employees.organisationId, organisation.id))
     .orderBy(asc(employees.email));
+  const renderedAt = new Date();
 
   return (
     <div className="space-y-6">
@@ -110,47 +111,92 @@ export default async function EmployeesPage({
                   <TableHead>Risk score</TableHead>
                   <TableHead>Last trained</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Exclusion</TableHead>
                   <TableHead className="w-12" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {employeeList.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="h-40 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={7} className="h-40 text-center text-sm text-muted-foreground">
                       No employees imported yet. Import a CSV or add an employee to begin testing campaigns.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  employeeList.map((employee) => (
-                    <TableRow key={employee.id}>
-                      <TableCell>
-                        <div className="font-medium">
-                          {employee.firstName} {employee.lastName}
-                        </div>
-                        <div className="text-xs text-muted-foreground">{employee.email}</div>
-                      </TableCell>
-                      <TableCell>{employee.department || "None"}</TableCell>
-                      <TableCell>{employee.riskScore}</TableCell>
-                      <TableCell>
-                        {employee.lastTrainedAt ? employee.lastTrainedAt.toLocaleDateString("en-AU") : "Not trained"}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={employee.active ? "secondary" : "outline"}>
-                          {employee.active ? "Active" : "Inactive"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <form action={setEmployeeActive}>
-                          <input type="hidden" name="orgSlug" value={orgSlug} />
-                          <input type="hidden" name="employeeId" value={employee.id} />
-                          <input type="hidden" name="active" value={employee.active ? "false" : "true"} />
-                          <Button type="submit" variant="ghost" size="sm">
-                            {employee.active ? "Deactivate" : "Reactivate"}
-                          </Button>
-                        </form>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                  employeeList.map((employee) => {
+                    const exclusionLifted =
+                      employee.excludedUntil != null && employee.excludedUntil.getTime() <= renderedAt.getTime();
+                    const isExcluded = employee.excluded && !exclusionLifted;
+                    return (
+                      <TableRow key={employee.id}>
+                        <TableCell>
+                          <div className="font-medium">
+                            {employee.firstName} {employee.lastName}
+                          </div>
+                          <div className="text-xs text-muted-foreground">{employee.email}</div>
+                        </TableCell>
+                        <TableCell>{employee.department || "None"}</TableCell>
+                        <TableCell>{employee.riskScore}</TableCell>
+                        <TableCell>
+                          {employee.lastTrainedAt ? employee.lastTrainedAt.toLocaleDateString("en-AU") : "Not trained"}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={employee.active ? "secondary" : "outline"}>
+                            {employee.active ? "Active" : "Inactive"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          {isExcluded ? (
+                            <div className="space-y-1">
+                              <Badge variant="default">Excluded</Badge>
+                              {employee.exclusionReason ? (
+                                <div className="text-xs text-muted-foreground">{employee.exclusionReason}</div>
+                              ) : null}
+                              {employee.excludedUntil ? (
+                                <div className="text-xs text-muted-foreground">
+                                  Until {employee.excludedUntil.toLocaleDateString("en-AU")}
+                                </div>
+                              ) : null}
+                              <form action={setEmployeeExclusion}>
+                                <input type="hidden" name="orgSlug" value={orgSlug} />
+                                <input type="hidden" name="employeeId" value={employee.id} />
+                                <input type="hidden" name="excluded" value="false" />
+                                <Button type="submit" variant="ghost" size="sm">
+                                  Lift exclusion
+                                </Button>
+                              </form>
+                            </div>
+                          ) : (
+                            <form action={setEmployeeExclusion} className="flex flex-col gap-2">
+                              <input type="hidden" name="orgSlug" value={orgSlug} />
+                              <input type="hidden" name="employeeId" value={employee.id} />
+                              <input type="hidden" name="excluded" value="true" />
+                              <Input
+                                name="reason"
+                                placeholder="Reason (optional)"
+                                className="h-7 text-xs"
+                                maxLength={280}
+                              />
+                              <Input name="until" type="date" className="h-7 text-xs" />
+                              <Button type="submit" variant="outline" size="sm">
+                                Exclude
+                              </Button>
+                            </form>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <form action={setEmployeeActive}>
+                            <input type="hidden" name="orgSlug" value={orgSlug} />
+                            <input type="hidden" name="employeeId" value={employee.id} />
+                            <input type="hidden" name="active" value={employee.active ? "false" : "true"} />
+                            <Button type="submit" variant="ghost" size="sm">
+                              {employee.active ? "Deactivate" : "Reactivate"}
+                            </Button>
+                          </form>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 )}
               </TableBody>
             </Table>

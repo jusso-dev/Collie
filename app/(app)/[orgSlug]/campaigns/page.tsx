@@ -198,8 +198,53 @@ export default async function CampaignsPage({
                   <Input id="endAt" name="endAt" type="datetime-local" />
                 </div>
               </div>
+              <fieldset className="rounded-lg border border-border p-3">
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Working-hours window</legend>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="workingHoursStart">Earliest send (local)</Label>
+                    <Input
+                      id="workingHoursStart"
+                      name="workingHoursStart"
+                      type="time"
+                      defaultValue="09:00"
+                      step={900}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="workingHoursEnd">Latest send (local)</Label>
+                    <Input id="workingHoursEnd" name="workingHoursEnd" type="time" defaultValue="17:00" step={900} />
+                  </div>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <Label htmlFor="workingDays">Working days (ISO 1=Mon..7=Sun)</Label>
+                  <Input id="workingDays" name="workingDays" defaultValue="1,2,3,4,5" />
+                </div>
+                <label className="mt-3 flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    name="respectEmployeeTimezone"
+                    value="true"
+                    defaultChecked
+                    className="h-4 w-4 rounded border-input"
+                  />
+                  Respect each employee&apos;s timezone (clamp send to their local working hours)
+                </label>
+                <div className="mt-3 space-y-2">
+                  <Label htmlFor="cooldownDays">Cooldown days (skip employees campaigned recently)</Label>
+                  <Input
+                    id="cooldownDays"
+                    name="cooldownDays"
+                    type="number"
+                    min={0}
+                    max={365}
+                    step={1}
+                    defaultValue={0}
+                  />
+                </div>
+              </fieldset>
               <p className="text-xs leading-5 text-muted-foreground">
-                A future start creates a node-cron pattern and schedules each recipient. Send now ignores the window.
+                Future start schedules each recipient inside the working-hours window in their own timezone. Send now still respects the window — out-of-hours targets are deferred to the next valid slot.
               </p>
               <p className="text-sm text-muted-foreground">
                 Target group: {activeEmployees[0]?.value ?? 0} active employees.

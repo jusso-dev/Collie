@@ -1,13 +1,19 @@
 "use server";
 
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import crypto from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
-import { cronPatternForDate, isValidCampaignCron, scheduledTargetTime } from "@/lib/campaigns/schedule";
+import {
+  cronPatternForDate,
+  DEFAULT_WORKING_WINDOW,
+  isValidCampaignCron,
+  scheduledTargetTime,
+  type WorkingWindow,
+} from "@/lib/campaigns/schedule";
 import { sendCampaignNow } from "@/lib/campaigns/send-campaign";
 import { db } from "@/lib/db/client";
 import {
@@ -21,6 +27,24 @@ import {
   landingPages,
 } from "@/lib/db/schema";
 
+function parseTimeOfDay(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const match = /^([0-2]?\d):([0-5]\d)$/.exec(value);
+  if (!match) return fallback;
+  const hours = Math.min(23, Math.max(0, Number(match[1])));
+  const minutes = Math.min(59, Math.max(0, Number(match[2])));
+  return hours * 60 + minutes;
+}
+
+function parseWorkingDays(raw: string | undefined): number[] {
+  if (!raw) return DEFAULT_WORKING_WINDOW.allowedIsoDays;
+  const parts = raw
+    .split(",")
+    .map((part) => Number(part.trim()))
+    .filter((day) => Number.isInteger(day) && day >= 1 && day <= 7);
+  return parts.length > 0 ? Array.from(new Set(parts)).sort() : DEFAULT_WORKING_WINDOW.allowedIsoDays;
+}
+
 const campaignSchema = z.object({
   orgSlug: z.string().min(1),
   name: z.string().trim().min(2).max(120),
@@ -30,6 +54,11 @@ const campaignSchema = z.object({
   sendStrategy: z.enum(["immediate", "drip", "randomised_over_window"]),
   startAt: z.string().optional(),
   endAt: z.string().optional(),
+  workingHoursStart: z.string().optional(),
+  workingHoursEnd: z.string().optional(),
+  workingDays: z.string().optional(),
+  respectEmployeeTimezone: z.string().optional(),
+  cooldownDays: z.string().optional(),
 });
 
 function valueFromForm(formData: FormData, key: string) {
@@ -47,8 +76,27 @@ export async function createCampaign(formData: FormData) {
     sendStrategy: valueFromForm(formData, "sendStrategy"),
     startAt: valueFromForm(formData, "startAt") || undefined,
     endAt: valueFromForm(formData, "endAt") || undefined,
+    workingHoursStart: valueFromForm(formData, "workingHoursStart") || undefined,
+    workingHoursEnd: valueFromForm(formData, "workingHoursEnd") || undefined,
+    workingDays: valueFromForm(formData, "workingDays") || undefined,
+    respectEmployeeTimezone: valueFromForm(formData, "respectEmployeeTimezone") || undefined,
+    cooldownDays: valueFromForm(formData, "cooldownDays") || undefined,
   });
   const organisation = await requireOrganisationForSlug(data.orgSlug);
+
+  const workingHoursStart = parseTimeOfDay(data.workingHoursStart, DEFAULT_WORKING_WINDOW.startMinute);
+  const workingHoursEnd = parseTimeOfDay(data.workingHoursEnd, DEFAULT_WORKING_WINDOW.endMinute);
+  if (workingHoursEnd <= workingHoursStart) {
+    throw new Error("Working hours end must be after working hours start.");
+  }
+  const workingDays = parseWorkingDays(data.workingDays);
+  const respectEmployeeTimezone = data.respectEmployeeTimezone !== "false";
+  const cooldownDays = Math.max(0, Math.min(365, Number(data.cooldownDays ?? "0") || 0));
+  const window: WorkingWindow = {
+    startMinute: workingHoursStart,
+    endMinute: workingHoursEnd,
+    allowedIsoDays: workingDays,
+  };
 
   const [template] = await db
     .select({ id: emailTemplates.id })
@@ -80,10 +128,15 @@ export async function createCampaign(formData: FormData) {
     throw new Error("Choose a landing page before creating the campaign.");
   }
 
+  const exclusionFilters = and(
+    or(eq(employees.excluded, false), sql`${employees.excluded} is null`),
+    or(isNull(employees.excludedUntil), gt(employees.excludedUntil, sql`now()`)),
+  );
+
   let targetEmployees = await db
     .select({ id: employees.id })
     .from(employees)
-    .where(and(eq(employees.organisationId, organisation.id), eq(employees.active, true)));
+    .where(and(eq(employees.organisationId, organisation.id), eq(employees.active, true), exclusionFilters));
 
   const targetGroupIds = data.targetGroupId === "all" ? [] : [data.targetGroupId];
 
@@ -107,13 +160,31 @@ export async function createCampaign(formData: FormData) {
           eq(employeeGroups.groupId, group.id),
           eq(employees.organisationId, organisation.id),
           eq(employees.active, true),
+          exclusionFilters,
         ),
       );
     targetEmployees = groupMembers;
   }
 
+  if (cooldownDays > 0) {
+    const cooldownSince = new Date(Date.now() - cooldownDays * 24 * 60 * 60 * 1000);
+    const recentRows = await db
+      .selectDistinct({ employeeId: campaignTargets.employeeId })
+      .from(campaignTargets)
+      .innerJoin(campaigns, eq(campaigns.id, campaignTargets.campaignId))
+      .where(
+        and(
+          eq(campaigns.organisationId, organisation.id),
+          sql`${campaignTargets.sentAt} is not null`,
+          sql`${campaignTargets.sentAt} >= ${cooldownSince.toISOString()}`,
+        ),
+      );
+    const cooldownSet = new Set(recentRows.map((row) => row.employeeId));
+    targetEmployees = targetEmployees.filter((employee) => !cooldownSet.has(employee.id));
+  }
+
   if (targetEmployees.length === 0) {
-    throw new Error("Add employees to the selected target before creating a campaign.");
+    throw new Error("All eligible employees are excluded or in cooldown.");
   }
 
   const startAt = data.startAt ? new Date(data.startAt) : null;
@@ -147,9 +218,23 @@ export async function createCampaign(formData: FormData) {
       startAt,
       endAt,
       scheduleCron,
+      workingHoursStart,
+      workingHoursEnd,
+      workingDays,
+      respectEmployeeTimezone,
+      cooldownDays,
       createdBy: organisation.userId,
     })
     .returning({ id: campaigns.id });
+
+  const targetIds = targetEmployees.map((employee) => employee.id);
+  const employeeMeta = targetIds.length
+    ? await db
+        .select({ id: employees.id, timezone: employees.timezone })
+        .from(employees)
+        .where(inArray(employees.id, targetIds))
+    : [];
+  const timezoneById = new Map(employeeMeta.map((row) => [row.id, row.timezone]));
 
   await db.insert(campaignTargets).values(
     targetEmployees.map((employee, index) => ({
@@ -164,6 +249,8 @@ export async function createCampaign(formData: FormData) {
               strategy: data.sendStrategy,
               startAt,
               endAt,
+              timeZone: respectEmployeeTimezone ? timezoneById.get(employee.id) ?? "Australia/Sydney" : null,
+              window: respectEmployeeTimezone ? window : null,
             })
           : null,
     })),

@@ -213,3 +213,45 @@ export async function setEmployeeActive(formData: FormData) {
   revalidatePath(`/${orgSlug}/employees`);
   revalidatePath(`/${orgSlug}/dashboard`);
 }
+
+const exclusionSchema = z.object({
+  orgSlug: z.string().min(1),
+  employeeId: z.string().min(1),
+  excluded: z.enum(["true", "false"]),
+  reason: z.string().trim().max(280).optional(),
+  until: z.string().optional(),
+});
+
+export async function setEmployeeExclusion(formData: FormData) {
+  const data = exclusionSchema.parse({
+    orgSlug: valueFromForm(formData, "orgSlug"),
+    employeeId: valueFromForm(formData, "employeeId"),
+    excluded: valueFromForm(formData, "excluded") || "true",
+    reason: valueFromForm(formData, "reason") || undefined,
+    until: valueFromForm(formData, "until") || undefined,
+  });
+  const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const excluded = data.excluded === "true";
+
+  let until: Date | null = null;
+  if (excluded && data.until) {
+    const parsed = new Date(data.until);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new Error("Choose a valid exclusion-until date.");
+    }
+    until = parsed;
+  }
+
+  await db
+    .update(employees)
+    .set({
+      excluded,
+      exclusionReason: excluded ? data.reason ?? null : null,
+      excludedUntil: until,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(employees.id, data.employeeId), eq(employees.organisationId, organisation.id)));
+
+  revalidatePath(`/${data.orgSlug}/employees`);
+  revalidatePath(`/${data.orgSlug}/campaigns`);
+}
