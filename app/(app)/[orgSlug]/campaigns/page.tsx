@@ -6,11 +6,21 @@ import { FlashToast } from "@/components/app/flash-toast";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { describeExclusionRule } from "@/lib/campaigns/exclusion-rules";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
-import { campaignTargets, campaigns, emailTemplates, groups, landingPages, employees } from "@/lib/db/schema";
+import {
+  campaignTargets,
+  campaigns,
+  emailTemplates,
+  exclusionRules,
+  groups,
+  landingPages,
+  employees,
+} from "@/lib/db/schema";
 import { buildCampaignTrackingUrls } from "@/lib/email/campaign-renderer";
 import { trackingUrlWarning } from "@/lib/tracking/public-url";
 
@@ -52,6 +62,16 @@ export default async function CampaignsPage({
     .select({ value: count() })
     .from(employees)
     .where(and(eq(employees.organisationId, organisation.id), eq(employees.active, true)));
+  const activeRules = await db
+    .select({
+      id: exclusionRules.id,
+      name: exclusionRules.name,
+      kind: exclusionRules.kind,
+      parameters: exclusionRules.parameters,
+    })
+    .from(exclusionRules)
+    .where(and(eq(exclusionRules.organisationId, organisation.id), eq(exclusionRules.active, true)))
+    .orderBy(exclusionRules.name);
   const campaignList = await db
     .select({
       id: campaigns.id,
@@ -249,6 +269,38 @@ export default async function CampaignsPage({
                     defaultValue={0}
                   />
                 </div>
+              </fieldset>
+              <fieldset className="rounded-lg border border-border p-3">
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Cohort exclusion rules</legend>
+                {activeRules.length === 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    No active rules. Add VIP, on-leave or new-hire rules on the Exclusions page.
+                  </p>
+                ) : (
+                  <div className="mt-2 space-y-2">
+                    {activeRules.map((rule) => (
+                      <label key={rule.id} className="flex items-start gap-2 text-sm">
+                        <Checkbox
+                          name="exclusionRuleIds"
+                          value={rule.id}
+                          defaultChecked
+                        />
+                        <span>
+                          <span className="block font-medium">{rule.name}</span>
+                          <span className="block text-muted-foreground">
+                            {describeExclusionRule({
+                              kind: rule.kind as "group" | "new_hire_days" | "role" | "tag",
+                              parameters: rule.parameters ?? {},
+                            })}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                    <p className="text-xs text-muted-foreground">
+                      Selected rules are evaluated at target-build time and snapshotted onto the campaign. Later edits to rules don&apos;t retroactively reshape this cohort.
+                    </p>
+                  </div>
+                )}
               </fieldset>
               <p className="text-xs leading-5 text-muted-foreground">
                 Future start schedules each recipient inside the working-hours window in their own timezone. Send now still respects the window — out-of-hours targets are deferred to the next valid slot.

@@ -9,6 +9,11 @@ import { z } from "zod";
 import { recordAudit } from "@/lib/audit/record";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import {
+  applyExclusionRules,
+  type ExclusionRule,
+  type ExclusionRuleKind,
+} from "@/lib/campaigns/exclusion-rules";
+import {
   cronPatternForDate,
   DEFAULT_WORKING_WINDOW,
   isValidCampaignCron,
@@ -24,6 +29,7 @@ import {
   employeeGroups,
   employees,
   events,
+  exclusionRules,
   groups,
   landingPages,
 } from "@/lib/db/schema";
@@ -60,6 +66,7 @@ const campaignSchema = z.object({
   workingDays: z.string().optional(),
   respectEmployeeTimezone: z.string().optional(),
   cooldownDays: z.string().optional(),
+  exclusionRuleIds: z.array(z.string()).default([]),
 });
 
 function valueFromForm(formData: FormData, key: string) {
@@ -82,6 +89,9 @@ export async function createCampaign(formData: FormData) {
     workingDays: valueFromForm(formData, "workingDays") || undefined,
     respectEmployeeTimezone: valueFromForm(formData, "respectEmployeeTimezone") || undefined,
     cooldownDays: valueFromForm(formData, "cooldownDays") || undefined,
+    exclusionRuleIds: formData
+      .getAll("exclusionRuleIds")
+      .filter((value): value is string => typeof value === "string"),
   });
   const organisation = await requireOrganisationForSlug(data.orgSlug);
 
@@ -135,7 +145,7 @@ export async function createCampaign(formData: FormData) {
   );
 
   let targetEmployees = await db
-    .select({ id: employees.id })
+    .select({ id: employees.id, createdAt: employees.createdAt })
     .from(employees)
     .where(and(eq(employees.organisationId, organisation.id), eq(employees.active, true), exclusionFilters));
 
@@ -153,7 +163,7 @@ export async function createCampaign(formData: FormData) {
     }
 
     const groupMembers = await db
-      .select({ id: employees.id })
+      .select({ id: employees.id, createdAt: employees.createdAt })
       .from(employeeGroups)
       .innerJoin(employees, eq(employees.id, employeeGroups.employeeId))
       .where(
@@ -165,6 +175,56 @@ export async function createCampaign(formData: FormData) {
         ),
       );
     targetEmployees = groupMembers;
+  }
+
+  // Apply cohort exclusion rules selected for this campaign. The ids list is
+  // validated against the org so a client cannot reference another tenant's
+  // rules. Whatever rule ids the operator chose are snapshotted onto the
+  // campaign so changes after target-build do not retroactively shift cohorts.
+  let appliedExclusionRuleIds: string[] = [];
+  if (data.exclusionRuleIds.length > 0) {
+    const requestedRules = await db
+      .select({
+        id: exclusionRules.id,
+        organisationId: exclusionRules.organisationId,
+        name: exclusionRules.name,
+        kind: exclusionRules.kind,
+        parameters: exclusionRules.parameters,
+        active: exclusionRules.active,
+      })
+      .from(exclusionRules)
+      .where(
+        and(
+          eq(exclusionRules.organisationId, organisation.id),
+          inArray(exclusionRules.id, data.exclusionRuleIds),
+        ),
+      );
+    const rulesToApply: ExclusionRule[] = requestedRules
+      .filter((rule) => rule.active)
+      .map((rule) => ({
+        id: rule.id,
+        organisationId: rule.organisationId,
+        name: rule.name,
+        kind: rule.kind as ExclusionRuleKind,
+        parameters: rule.parameters ?? {},
+        active: rule.active,
+      }));
+    appliedExclusionRuleIds = rulesToApply.map((rule) => rule.id);
+
+    if (rulesToApply.length > 0 && targetEmployees.length > 0) {
+      const candidateIds = targetEmployees.map((employee) => employee.id);
+      const memberships = await db
+        .select({ employeeId: employeeGroups.employeeId, groupId: employeeGroups.groupId })
+        .from(employeeGroups)
+        .where(inArray(employeeGroups.employeeId, candidateIds));
+      const ruleResult = applyExclusionRules({
+        employees: targetEmployees.map((employee) => ({ id: employee.id, createdAt: employee.createdAt })),
+        memberships,
+        rules: rulesToApply,
+      });
+      const survivingIds = new Set(ruleResult.retainedEmployeeIds);
+      targetEmployees = targetEmployees.filter((employee) => survivingIds.has(employee.id));
+    }
   }
 
   if (cooldownDays > 0) {
@@ -224,6 +284,7 @@ export async function createCampaign(formData: FormData) {
       workingDays,
       respectEmployeeTimezone,
       cooldownDays,
+      appliedExclusionRuleIds,
       createdBy: organisation.userId,
     })
     .returning({ id: campaigns.id });
