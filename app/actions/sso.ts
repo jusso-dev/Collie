@@ -202,6 +202,7 @@ export async function discoverSsoForEmail(input: { email: string }): Promise<
   | {
       kind: "saml";
       organisationId: string;
+      organisationSlug: string;
       enforceSso: boolean;
     }
 > {
@@ -220,6 +221,7 @@ export async function discoverSsoForEmail(input: { email: string }): Promise<
     return {
       kind: "saml",
       organisationId: tenant.organisationId,
+      organisationSlug: tenant.organisationSlug,
       enforceSso: tenant.enforceSso,
     };
   }

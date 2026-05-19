@@ -106,6 +106,30 @@ export const exclusionRuleKind = pgEnum("exclusion_rule_kind", [
   "role",
   "tag",
 ]);
+export const siemSoarConnector = pgEnum("siem_soar_connector", [
+  "sentinel",
+  "splunk_soar",
+  "cortex_xsoar",
+  "servicenow_sir",
+]);
+export const siemSoarFormat = pgEnum("siem_soar_format", ["json", "cef", "leef"]);
+export const outboundDeliveryStatus = pgEnum("outbound_delivery_status", [
+  "pending",
+  "retrying",
+  "succeeded",
+  "dead_letter",
+]);
+
+export type OutboundEndpointConfig = {
+  sentinel?: {
+    azureCloud: "public" | "usgov" | "china";
+    tenantId: string;
+    clientId: string;
+    clientSecretEncrypted?: string;
+    dcrImmutableId: string;
+    streamName: string;
+  };
+};
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -125,6 +149,7 @@ export const organisations = pgTable(
     resendApiKeyEncrypted: text("resend_api_key_encrypted"),
     senderFromAddress: text("sender_from_address"),
     auditRetentionDays: integer("audit_retention_days").default(395).notNull(),
+    eventPiiScrubDays: integer("event_pii_scrub_days").default(90).notNull(),
     sendingTransport: sendingTransport("sending_transport").default("resend").notNull(),
     smtpHost: text("smtp_host"),
     smtpPort: integer("smtp_port"),
@@ -148,12 +173,38 @@ export const organisations = pgTable(
     apiKeyHash: text("api_key_hash"),
     apiKeyLast4: text("api_key_last4"),
     apiKeyCreatedAt: timestamp("api_key_created_at", { withTimezone: true }),
+    lrsEnabled: boolean("lrs_enabled").default(false).notNull(),
+    lrsEndpointUrl: text("lrs_endpoint_url"),
+    lrsUsernameEncrypted: text("lrs_username_encrypted"),
+    lrsPasswordEncrypted: text("lrs_password_encrypted"),
+    siemSoarSigningKeyEncrypted: text("siem_soar_signing_key_encrypted"),
+    siemSoarSigningKeyLast4: text("siem_soar_signing_key_last4"),
+    siemSoarSigningKeyCreatedAt: timestamp("siem_soar_signing_key_created_at", { withTimezone: true }),
+    certificateSigningPrivateKeyEncrypted: text("certificate_signing_private_key_encrypted"),
+    certificateSigningPublicKey: text("certificate_signing_public_key"),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("organisations_slug_idx").on(table.slug),
     uniqueIndex("organisations_scim_token_hash_idx").on(table.scimTokenHash),
     uniqueIndex("organisations_api_key_hash_idx").on(table.apiKeyHash),
+  ],
+);
+
+export const industryBenchmarks = pgTable(
+  "industry_benchmarks",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    industry: text("industry").notNull(),
+    employeeCountBand: text("employee_count_band").notNull(),
+    medianPpp: integer("median_ppp").notNull(),
+    sampleSize: integer("sample_size").default(0).notNull(),
+    calculatedAt: timestamp("calculated_at", { withTimezone: true }).defaultNow().notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("industry_benchmarks_industry_band_idx").on(table.industry, table.employeeCountBand),
+    index("industry_benchmarks_lookup_idx").on(table.industry, table.employeeCountBand),
   ],
 );
 
@@ -652,6 +703,89 @@ export const realMailReports = pgTable(
   ],
 );
 
+export const outboundEndpoints = pgTable(
+  "outbound_endpoints",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    connector: siemSoarConnector("connector").notNull(),
+    format: siemSoarFormat("format").default("json").notNull(),
+    url: text("url").notNull(),
+    config: jsonb("config").$type<OutboundEndpointConfig>().default({}).notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    eventTypes: text("event_types").array().default(sql`ARRAY[]::text[]`).notNull(),
+    maxAttempts: integer("max_attempts").default(5).notNull(),
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+    lastFailureAt: timestamp("last_failure_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    index("outbound_endpoints_org_idx").on(table.organisationId),
+    index("outbound_endpoints_enabled_idx").on(table.enabled),
+  ],
+);
+
+export const outboundDeliveries = pgTable(
+  "outbound_deliveries",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    endpointId: text("endpoint_id")
+      .notNull()
+      .references(() => outboundEndpoints.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: text("source_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    status: outboundDeliveryStatus("status").default("pending").notNull(),
+    attemptCount: integer("attempt_count").default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    lastStatusCode: integer("last_status_code"),
+    lastError: text("last_error"),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index("outbound_deliveries_org_idx").on(table.organisationId, table.createdAt.desc()),
+    index("outbound_deliveries_endpoint_idx").on(table.endpointId, table.createdAt.desc()),
+    index("outbound_deliveries_status_next_idx").on(table.status, table.nextAttemptAt),
+    uniqueIndex("outbound_deliveries_idempotency_uidx").on(table.endpointId, table.idempotencyKey),
+  ],
+);
+
+export const outboundDeadLetters = pgTable(
+  "outbound_dead_letters",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    endpointId: text("endpoint_id")
+      .notNull()
+      .references(() => outboundEndpoints.id, { onDelete: "cascade" }),
+    deliveryId: text("delivery_id")
+      .notNull()
+      .references(() => outboundDeliveries.id, { onDelete: "cascade" }),
+    reason: text("reason").notNull(),
+    lastStatusCode: integer("last_status_code"),
+    lastError: text("last_error"),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("outbound_dead_letters_org_idx").on(table.organisationId, table.createdAt.desc()),
+    index("outbound_dead_letters_endpoint_idx").on(table.endpointId, table.createdAt.desc()),
+    uniqueIndex("outbound_dead_letters_delivery_uidx").on(table.deliveryId),
+  ],
+);
+
 export const trainingAssignments = pgTable(
   "training_assignments",
   {
@@ -669,6 +803,68 @@ export const trainingAssignments = pgTable(
     quizScore: integer("quiz_score"),
   },
   (table) => [index("training_assignments_employee_idx").on(table.employeeId)],
+);
+
+export type TrainingCertificateJson = {
+  version: 1;
+  certificateId: string;
+  issuer: "Collie";
+  organisation: {
+    id: string;
+    name: string;
+  };
+  employee: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  training: {
+    moduleId: string | null;
+    title: string;
+    topic: string;
+    durationSeconds: number | null;
+  };
+  completion: {
+    campaignId: string;
+    campaignName: string;
+    campaignTargetId: string;
+    completedAt: string;
+    issuedAt: string;
+  };
+};
+
+export const trainingCertificates = pgTable(
+  "training_certificates",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    employeeId: text("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    trainingModuleId: text("training_module_id").references(() => trainingModules.id, { onDelete: "set null" }),
+    campaignTargetId: text("campaign_target_id").references(() => campaignTargets.id, { onDelete: "set null" }),
+    certificateJson: jsonb("certificate_json").$type<TrainingCertificateJson>().notNull(),
+    certificateJsonHash: text("certificate_json_hash").notNull(),
+    signature: text("signature").notNull(),
+    signingPublicKey: text("signing_public_key").notNull(),
+    signingPublicKeySha256: text("signing_public_key_sha256").notNull(),
+    downloadTokenEncrypted: text("download_token_encrypted").notNull(),
+    downloadTokenHash: text("download_token_hash").notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).defaultNow().notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    index("training_certificates_org_idx").on(table.organisationId),
+    index("training_certificates_employee_idx").on(table.employeeId),
+    uniqueIndex("training_certificates_target_uidx")
+      .on(table.campaignTargetId)
+      .where(sql`${table.campaignTargetId} is not null`),
+    uniqueIndex("training_certificates_token_hash_uidx").on(table.downloadTokenHash),
+    uniqueIndex("training_certificates_json_hash_uidx").on(table.certificateJsonHash),
+  ],
 );
 
 export const riskScoreHistory = pgTable(
@@ -764,6 +960,10 @@ export const organisationsRelations = relations(organisations, ({ many }) => ({
   employeeSyncRuns: many(employeeSyncRuns),
   realMailReports: many(realMailReports),
   smsOptOuts: many(smsOptOuts),
+  trainingCertificates: many(trainingCertificates),
+  outboundEndpoints: many(outboundEndpoints),
+  outboundDeliveries: many(outboundDeliveries),
+  outboundDeadLetters: many(outboundDeadLetters),
 }));
 
 export const exclusionRulesRelations = relations(exclusionRules, ({ one }) => ({
@@ -788,6 +988,42 @@ export const realMailReportsRelations = relations(realMailReports, ({ one }) => 
   reporter: one(employees, {
     fields: [realMailReports.reporterEmployeeId],
     references: [employees.id],
+  }),
+}));
+
+export const outboundEndpointsRelations = relations(outboundEndpoints, ({ one, many }) => ({
+  organisation: one(organisations, {
+    fields: [outboundEndpoints.organisationId],
+    references: [organisations.id],
+  }),
+  deliveries: many(outboundDeliveries),
+  deadLetters: many(outboundDeadLetters),
+}));
+
+export const outboundDeliveriesRelations = relations(outboundDeliveries, ({ one, many }) => ({
+  organisation: one(organisations, {
+    fields: [outboundDeliveries.organisationId],
+    references: [organisations.id],
+  }),
+  endpoint: one(outboundEndpoints, {
+    fields: [outboundDeliveries.endpointId],
+    references: [outboundEndpoints.id],
+  }),
+  deadLetters: many(outboundDeadLetters),
+}));
+
+export const outboundDeadLettersRelations = relations(outboundDeadLetters, ({ one }) => ({
+  organisation: one(organisations, {
+    fields: [outboundDeadLetters.organisationId],
+    references: [organisations.id],
+  }),
+  endpoint: one(outboundEndpoints, {
+    fields: [outboundDeadLetters.endpointId],
+    references: [outboundEndpoints.id],
+  }),
+  delivery: one(outboundDeliveries, {
+    fields: [outboundDeadLetters.deliveryId],
+    references: [outboundDeliveries.id],
   }),
 }));
 
@@ -818,6 +1054,7 @@ export const employeesRelations = relations(employees, ({ one, many }) => ({
   campaignTargets: many(campaignTargets),
   trainingAssignments: many(trainingAssignments),
   realMailReports: many(realMailReports),
+  trainingCertificates: many(trainingCertificates),
 }));
 
 export const campaignsRelations = relations(campaigns, ({ one, many }) => ({
@@ -866,4 +1103,24 @@ export const campaignTargetsRelations = relations(campaignTargets, ({ one, many 
   }),
   events: many(events),
   voiceCallAttempts: many(voiceCallAttempts),
+  trainingCertificates: many(trainingCertificates),
+}));
+
+export const trainingCertificatesRelations = relations(trainingCertificates, ({ one }) => ({
+  organisation: one(organisations, {
+    fields: [trainingCertificates.organisationId],
+    references: [organisations.id],
+  }),
+  employee: one(employees, {
+    fields: [trainingCertificates.employeeId],
+    references: [employees.id],
+  }),
+  trainingModule: one(trainingModules, {
+    fields: [trainingCertificates.trainingModuleId],
+    references: [trainingModules.id],
+  }),
+  campaignTarget: one(campaignTargets, {
+    fields: [trainingCertificates.campaignTargetId],
+    references: [campaignTargets.id],
+  }),
 }));

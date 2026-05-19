@@ -7,7 +7,9 @@ import {
   sendCampaignById,
   sendCampaignTargetById,
 } from "@/lib/campaigns/send-campaign";
+import { runEventRetention } from "@/lib/compliance/event-retention";
 import { inngest } from "@/lib/inngest/client";
+import { deliverSiemSoarDelivery, listDueSiemSoarDeliveryIds } from "@/lib/integrations/siem-soar";
 import { calculateRiskScore } from "@/lib/risk/scoring";
 
 /**
@@ -207,9 +209,85 @@ export const riskRecalculateScores = inngest.createFunction(
   },
 );
 
+export const eventRetentionSweep = inngest.createFunction(
+  {
+    id: "event-retention-sweep",
+    name: "Compliance: event retention sweep",
+    retries: 1,
+    triggers: [{ cron: "TZ=Australia/Sydney 30 2 * * *" }],
+  },
+  async ({ step }) => {
+    return step.run("scrub-expired-event-pii", async () => runEventRetention());
+  },
+);
+
+export const siemSoarDeliver = inngest.createFunction(
+  {
+    id: "siem-soar-deliver",
+    name: "SIEM/SOAR deliver",
+    retries: 0,
+    triggers: [{ event: "siem-soar/delivery.requested" }],
+    concurrency: [
+      {
+        scope: "account",
+        key: "event.data.deliveryId",
+        limit: 1,
+      },
+    ],
+  },
+  async ({ event, step }) => {
+    const { deliveryId } = event.data as { deliveryId?: string };
+
+    if (!deliveryId) {
+      throw new NonRetriableError("siem-soar/delivery.requested is missing deliveryId.");
+    }
+
+    const result = await step.run("deliver", async () => deliverSiemSoarDelivery(deliveryId));
+
+    if (result.status === "retrying") {
+      await step.sendEvent("schedule-retry", {
+        name: "siem-soar/delivery.requested",
+        data: { deliveryId },
+        ts: new Date(result.retryAt).getTime(),
+      });
+    }
+
+    return result;
+  },
+);
+
+export const siemSoarSweepDueDeliveries = inngest.createFunction(
+  {
+    id: "siem-soar-sweep-due-deliveries",
+    name: "SIEM/SOAR sweep due deliveries",
+    retries: 1,
+    triggers: [{ cron: "*/5 * * * *" }],
+  },
+  async ({ step }) => {
+    const deliveryIds = await step.run("list-due-deliveries", async () =>
+      listDueSiemSoarDeliveryIds(100),
+    );
+
+    if (deliveryIds.length > 0) {
+      await step.sendEvent(
+        "enqueue-due-deliveries",
+        deliveryIds.map((deliveryId) => ({
+          name: "siem-soar/delivery.requested",
+          data: { deliveryId },
+        })),
+      );
+    }
+
+    return { queued: deliveryIds.length };
+  },
+);
+
 export const functions = [
   campaignSend,
   campaignDispatch,
   campaignSendTarget,
   riskRecalculateScores,
+  eventRetentionSweep,
+  siemSoarDeliver,
+  siemSoarSweepDueDeliveries,
 ];

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { db } from "@/lib/db/client";
 import { campaignTargets, campaigns, events, organisations, smsOptOuts } from "@/lib/db/schema";
+import { enqueueSimulationEventPush } from "@/lib/integrations/siem-soar";
 import { firstSmsKeyword, normalizeSmsPhoneNumber, normalizeSmsSender } from "@/lib/sms/phone";
 import {
   extractSmsToken,
@@ -201,18 +202,29 @@ async function recordSmsReport(input: {
   if (!target) return false;
 
   const now = new Date();
-  await db.insert(events).values({
-    campaignTargetId: target.id,
-    eventType: "reported",
-    ipAddress: input.ipAddress,
-    userAgent: input.userAgent,
-    metadata: input.metadata,
-    createdAt: now,
-  });
+  const [event] = await db
+    .insert(events)
+    .values({
+      campaignTargetId: target.id,
+      eventType: "reported",
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+      metadata: input.metadata,
+      createdAt: now,
+    })
+    .returning({ id: events.id });
   await db
     .update(campaignTargets)
     .set({ reportedAt: target.reportedAt ?? now, updatedAt: now })
     .where(eq(campaignTargets.id, target.id));
+
+  if (event) {
+    try {
+      await enqueueSimulationEventPush(event.id);
+    } catch (error) {
+      console.warn("SIEM/SOAR push could not be queued for SMS report", error);
+    }
+  }
 
   return true;
 }

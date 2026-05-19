@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { db } from "@/lib/db/client";
 import { employees, realMailReports } from "@/lib/db/schema";
+import { enqueueRealMailReportPush } from "@/lib/integrations/siem-soar";
 import { recordTrackingEvent } from "@/lib/tracking/record-event";
 
 const attachmentSchema = z.object({
@@ -175,6 +176,14 @@ export async function POST(request: NextRequest) {
       source,
     })
     .returning({ id: realMailReports.id });
+
+  if (inserted) {
+    try {
+      await enqueueRealMailReportPush(inserted.id);
+    } catch (error) {
+      console.warn("SIEM/SOAR push could not be queued for real-mail report", error);
+    }
+  }
 
   return jsonResponse({
     ok: true,
