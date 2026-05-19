@@ -26,7 +26,7 @@ import {
 } from "@/app/actions/team";
 import { EmailSendingSettings } from "@/components/app/email-sending-settings";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScimTokenCard } from "@/components/settings/scim-token-card";
@@ -44,6 +44,7 @@ import {
 } from "@/lib/db/schema";
 import { buildCampaignReportAddress, buildOrganisationReportAddress } from "@/lib/email/reporting";
 import { and, desc, eq, sql } from "drizzle-orm";
+import Link from "next/link";
 
 function safeOpen(sealed: string | null): string | null {
   if (!sealed) return null;
@@ -363,6 +364,20 @@ export default async function SettingsPage({
         smtpFromAddress={organisation.smtpFromAddress}
         testRecipientDefault={null}
       />
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-5 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="font-medium">Deliverability allowlist guide</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Per-provider rules for M365 Advanced Delivery, Mimecast, and Proofpoint TAP that stop simulation mail from being blocked or rewritten.
+          </p>
+        </div>
+        <Link
+          href={`/${orgSlug}/deliverability`}
+          className={buttonVariants({ variant: "outline", size: "default" })}
+        >
+          Open allowlist guide
+        </Link>
+      </div>
       <ScimTokenCard
         orgSlug={orgSlug}
         endpointUrl={`${appUrl}/api/scim/v2`}
