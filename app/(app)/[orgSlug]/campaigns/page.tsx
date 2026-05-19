@@ -95,7 +95,14 @@ export default async function CampaignsPage({
     }),
   );
   const targetsByCampaign = new Map(targetCounts);
-  const sendingConfigured = Boolean(organisation.resendApiKeyEncrypted && organisation.senderFromAddress);
+  const sendingConfigured =
+    organisation.sendingTransport === "smtp"
+      ? Boolean(
+          organisation.smtpHost &&
+            organisation.smtpPort &&
+            (organisation.smtpFromAddress || organisation.senderFromAddress),
+        )
+      : Boolean(organisation.resendApiKeyEncrypted && organisation.senderFromAddress);
   const warning = trackingUrlWarning();
 
   return (

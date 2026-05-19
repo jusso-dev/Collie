@@ -1,4 +1,3 @@
-import { saveSendingSettings } from "@/app/actions/settings";
 import {
   cancelOrganisationInvitation,
   inviteOrganisationUser,
@@ -9,15 +8,26 @@ import {
   setMfaRequirement,
   updateOrganisationUserRole,
 } from "@/app/actions/team";
+import { EmailSendingSettings } from "@/components/app/email-sending-settings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
+import { openTotpSecret } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
 import { organisationInvitations, users, verifications } from "@/lib/db/schema";
 import { buildCampaignReportAddress, buildOrganisationReportAddress } from "@/lib/email/reporting";
 import { and, desc, eq, sql } from "drizzle-orm";
+
+function safeOpen(sealed: string | null): string | null {
+  if (!sealed) return null;
+  try {
+    return openTotpSecret(sealed);
+  } catch {
+    return null;
+  }
+}
 
 export default async function SettingsPage({
   params,
@@ -26,7 +36,6 @@ export default async function SettingsPage({
 }) {
   const { orgSlug } = await params;
   const organisation = await requireOrganisationForSlug(orgSlug);
-  const isConfigured = Boolean(organisation.resendApiKeyEncrypted && organisation.senderFromAddress);
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL || process.env.BETTER_AUTH_URL || "http://localhost:3000").replace(/\/$/, "");
   const reportMailbox = buildOrganisationReportAddress(orgSlug);
   const tokenisedReplyPattern = buildCampaignReportAddress("{token}");
@@ -257,45 +266,20 @@ export default async function SettingsPage({
           </table>
         </div>
       </div>
-      <div className="rounded-lg border border-border bg-card p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="font-medium">Email sending</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Add a Resend API key and the sender From address used for campaign emails.
-            </p>
-          </div>
-          <Badge variant={isConfigured ? "default" : "outline"}>
-            {isConfigured ? "Configured" : "Not configured"}
-          </Badge>
-        </div>
-        <form action={saveSendingSettings} className="mt-5 grid gap-4 md:grid-cols-2">
-          <input type="hidden" name="orgSlug" value={orgSlug} />
-          <div className="space-y-2">
-            <Label htmlFor="resend-api-key">Resend API key</Label>
-            <Input
-              id="resend-api-key"
-              name="resendApiKey"
-              type="password"
-              defaultValue={organisation.resendApiKeyEncrypted ?? ""}
-              required
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="sender-from-address">Sender From address</Label>
-            <Input
-              id="sender-from-address"
-              name="senderFromAddress"
-              type="email"
-              defaultValue={organisation.senderFromAddress ?? ""}
-              required
-            />
-          </div>
-          <div className="md:col-span-2">
-            <Button type="submit">Save email settings</Button>
-          </div>
-        </form>
-      </div>
+      <EmailSendingSettings
+        orgSlug={orgSlug}
+        initialTransport={organisation.sendingTransport}
+        senderFromAddress={organisation.senderFromAddress}
+        hasResendKey={Boolean(organisation.resendApiKeyEncrypted)}
+        smtpHost={organisation.smtpHost}
+        smtpPort={organisation.smtpPort}
+        smtpUsername={safeOpen(organisation.smtpUsernameEncrypted)}
+        hasSmtpPassword={Boolean(organisation.smtpPasswordEncrypted)}
+        smtpSecure={organisation.smtpSecure}
+        smtpFromAddress={organisation.smtpFromAddress}
+        testRecipientDefault={null}
+      />
+
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>

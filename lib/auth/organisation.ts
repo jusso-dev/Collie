@@ -32,6 +32,13 @@ export async function requireOrganisationForSlug(orgSlug: string) {
       slug: organisations.slug,
       senderFromAddress: organisations.senderFromAddress,
       resendApiKeyEncrypted: organisations.resendApiKeyEncrypted,
+      sendingTransport: organisations.sendingTransport,
+      smtpHost: organisations.smtpHost,
+      smtpPort: organisations.smtpPort,
+      smtpUsernameEncrypted: organisations.smtpUsernameEncrypted,
+      smtpPasswordEncrypted: organisations.smtpPasswordEncrypted,
+      smtpSecure: organisations.smtpSecure,
+      smtpFromAddress: organisations.smtpFromAddress,
       userActive: users.active,
     })
     .from(organisations)
@@ -53,6 +60,13 @@ export async function requireOrganisationForSlug(orgSlug: string) {
     slug: organisation.slug,
     senderFromAddress: organisation.senderFromAddress,
     resendApiKeyEncrypted: organisation.resendApiKeyEncrypted,
+    sendingTransport: organisation.sendingTransport,
+    smtpHost: organisation.smtpHost,
+    smtpPort: organisation.smtpPort,
+    smtpUsernameEncrypted: organisation.smtpUsernameEncrypted,
+    smtpPasswordEncrypted: organisation.smtpPasswordEncrypted,
+    smtpSecure: organisation.smtpSecure,
+    smtpFromAddress: organisation.smtpFromAddress,
     userId: session.user.id,
   };
 }
