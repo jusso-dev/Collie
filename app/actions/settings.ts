@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+import { recordAudit } from "@/lib/audit/record";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
 import { organisations } from "@/lib/db/schema";
@@ -35,6 +36,15 @@ export async function saveSendingSettings(formData: FormData) {
       updatedAt: new Date(),
     })
     .where(eq(organisations.id, organisation.id));
+
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "settings.save_sending",
+    resourceType: "organisation",
+    resourceId: organisation.id,
+    metadata: { senderFromAddress: data.senderFromAddress },
+  });
 
   revalidatePath(`/${data.orgSlug}/settings`);
   revalidatePath(`/${data.orgSlug}/campaigns`);

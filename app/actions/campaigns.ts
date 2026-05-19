@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
+import { recordAudit } from "@/lib/audit/record";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import {
   cronPatternForDate,
@@ -256,6 +257,21 @@ export async function createCampaign(formData: FormData) {
     })),
   );
 
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "campaign.create",
+    resourceType: "campaign",
+    resourceId: campaign.id,
+    metadata: {
+      name: data.name,
+      status,
+      sendStrategy: data.sendStrategy,
+      targetCount: targetEmployees.length,
+      scheduledStartAt: startAt?.toISOString() ?? null,
+    },
+  });
+
   revalidatePath(`/${data.orgSlug}/campaigns`);
   revalidatePath(`/${data.orgSlug}/campaigns/${campaign.id}`);
   revalidatePath(`/${data.orgSlug}/dashboard`);
@@ -280,6 +296,15 @@ export async function launchCampaign(formData: FormData) {
   const organisation = await requireOrganisationForSlug(data.orgSlug);
 
   const result = await sendCampaignNow({ organisation, campaignId: data.campaignId });
+
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "campaign.launch",
+    resourceType: "campaign",
+    resourceId: data.campaignId,
+    metadata: { sentCount: result.sentCount },
+  });
 
   revalidatePath(`/${data.orgSlug}/campaigns`);
   revalidatePath(`/${data.orgSlug}/campaigns/${data.campaignId}`);
@@ -306,6 +331,15 @@ export async function updateCampaignStatus(formData: FormData) {
     .update(campaigns)
     .set({ status: data.status, updatedAt: new Date() })
     .where(and(eq(campaigns.id, data.campaignId), eq(campaigns.organisationId, organisation.id)));
+
+  await recordAudit({
+    organisationId: organisation.id,
+    actorUserId: organisation.userId,
+    action: "campaign.update_status",
+    resourceType: "campaign",
+    resourceId: data.campaignId,
+    metadata: { status: data.status },
+  });
 
   revalidatePath(`/${data.orgSlug}/campaigns`);
   revalidatePath(`/${data.orgSlug}/campaigns/${data.campaignId}`);

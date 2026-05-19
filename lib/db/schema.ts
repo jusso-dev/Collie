@@ -84,6 +84,7 @@ export const organisations = pgTable(
     dataRegion: dataRegion("data_region").default("au").notNull(),
     resendApiKeyEncrypted: text("resend_api_key_encrypted"),
     senderFromAddress: text("sender_from_address"),
+    auditRetentionDays: integer("audit_retention_days").default(395).notNull(),
     ...timestamps,
   },
   (table) => [uniqueIndex("organisations_slug_idx").on(table.slug)],
@@ -403,6 +404,28 @@ export const riskScoreHistory = pgTable(
     factors: jsonb("factors").$type<Record<string, number | string>>().notNull(),
   },
   (table) => [index("risk_score_history_employee_idx").on(table.employeeId)],
+);
+
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    actorUserId: text("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    action: text("action").notNull(),
+    resourceType: text("resource_type").notNull(),
+    resourceId: text("resource_id"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}).notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("audit_log_org_created_idx").on(table.organisationId, table.createdAt.desc()),
+    index("audit_log_resource_idx").on(table.resourceType, table.resourceId),
+  ],
 );
 
 export const organisationsRelations = relations(organisations, ({ many }) => ({
