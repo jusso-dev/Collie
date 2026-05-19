@@ -458,6 +458,45 @@ export const events = pgTable(
   (table) => [index("events_target_idx").on(table.campaignTargetId), index("events_type_idx").on(table.eventType)],
 );
 
+export type RealMailReportAttachment = {
+  name: string;
+  size: number;
+  sha256: string;
+  contentType?: string;
+};
+
+export const realMailReports = pgTable(
+  "real_mail_reports",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    reporterEmployeeId: text("reporter_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    reporterEmail: text("reporter_email").notNull(),
+    subject: text("subject").notNull(),
+    sender: text("sender").notNull(),
+    headersRaw: text("headers_raw"),
+    bodyHash: text("body_hash"),
+    bodyPreview: text("body_preview"),
+    urls: text("urls").array().default(sql`ARRAY[]::text[]`).notNull(),
+    attachmentsMeta: jsonb("attachments_meta")
+      .$type<RealMailReportAttachment[]>()
+      .default([])
+      .notNull(),
+    severity: text("severity").default("unknown").notNull(),
+    source: text("source").default("addin").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("real_mail_reports_org_idx").on(table.organisationId),
+    index("real_mail_reports_reporter_idx").on(table.reporterEmployeeId),
+    index("real_mail_reports_created_idx").on(table.createdAt),
+  ],
+);
+
 export const trainingAssignments = pgTable(
   "training_assignments",
   {
@@ -568,6 +607,7 @@ export const organisationsRelations = relations(organisations, ({ many }) => ({
   invitations: many(organisationInvitations),
   exclusionRules: many(exclusionRules),
   employeeSyncRuns: many(employeeSyncRuns),
+  realMailReports: many(realMailReports),
 }));
 
 export const exclusionRulesRelations = relations(exclusionRules, ({ one }) => ({
@@ -581,6 +621,17 @@ export const employeeSyncRunsRelations = relations(employeeSyncRuns, ({ one }) =
   organisation: one(organisations, {
     fields: [employeeSyncRuns.organisationId],
     references: [organisations.id],
+  }),
+}));
+
+export const realMailReportsRelations = relations(realMailReports, ({ one }) => ({
+  organisation: one(organisations, {
+    fields: [realMailReports.organisationId],
+    references: [organisations.id],
+  }),
+  reporter: one(employees, {
+    fields: [realMailReports.reporterEmployeeId],
+    references: [employees.id],
   }),
 }));
 
@@ -610,4 +661,5 @@ export const employeesRelations = relations(employees, ({ one, many }) => ({
   memberships: many(employeeGroups),
   campaignTargets: many(campaignTargets),
   trainingAssignments: many(trainingAssignments),
+  realMailReports: many(realMailReports),
 }));

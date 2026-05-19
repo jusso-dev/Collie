@@ -78,6 +78,13 @@
       "when": 1779170221891,
       "tag": "0010_graceful_agent_brand",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1779170377729,
+      "tag": "0011_warm_corsair",
+      "breakpoints": true
     }
   ]
 }
