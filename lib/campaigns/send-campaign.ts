@@ -1,4 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import {
   DEFAULT_WORKING_WINDOW,
@@ -6,8 +7,18 @@ import {
   nextAllowedSendTime,
   type WorkingWindow,
 } from "@/lib/campaigns/schedule";
+import { assertCampaignDeepfakeLaunchAllowed } from "@/lib/deepfake/assets";
 import { db } from "@/lib/db/client";
-import { campaignTargets, campaigns, emailTemplates, employees, events, organisations } from "@/lib/db/schema";
+import {
+  campaignTargets,
+  campaignVariants,
+  campaigns,
+  emailTemplates,
+  employees,
+  events,
+  organisations,
+  smsOptOuts,
+} from "@/lib/db/schema";
 import {
   getTransportForOrganisation,
   TransientSendError,
@@ -15,8 +26,25 @@ import {
   type OrganisationTransportConfig,
 } from "@/lib/email/campaign-sender";
 import { inngest } from "@/lib/inngest/client";
+import { normalizeSmsPhoneNumber } from "@/lib/sms/phone";
+import { buildUsbTrainingRedirectPayload } from "@/lib/usb/payload";
+import {
+  hasTwilioSmsConfig,
+  isRetryableTwilioSmsError,
+  sendTwilioSms,
+  TwilioSmsConfigurationError,
+  type TwilioSmsOrganisationConfig,
+} from "@/lib/sms/twilio";
+import {
+  assertVoiceCampaignCanSend,
+  mergeVoiceConfig,
+  sendVoiceCampaignCall,
+  type OrganisationVoiceConfig,
+} from "@/lib/voice/twilio";
 
-type OrganisationSendConfig = OrganisationTransportConfig & {
+type DeliveryChannelName = "email" | "sms" | "voice" | "qr" | "attachment" | "usb";
+
+type OrganisationSendConfig = OrganisationTransportConfig & TwilioSmsOrganisationConfig & OrganisationVoiceConfig & {
   id: string;
 };
 
@@ -24,10 +52,14 @@ type LoadedCampaign = {
   id: string;
   name: string;
   status: string;
+  deliveryChannel: DeliveryChannelName;
   templateId: string | null;
   templateSubject: string | null;
   templateHtml: string | null;
   templateText: string | null;
+  templateCategory: string | null;
+  templateRegion: string | null;
+  scenario: string | null;
   workingHoursStart: number;
   workingHoursEnd: number;
   workingDays: number[];
@@ -39,16 +71,36 @@ type TargetRow = {
   token: string;
   sentAt: Date | null;
   scheduledAt: Date | null;
+  campaignVariantId: string | null;
+  variantTemplateId: string | null;
+  variantTemplateSubject: string | null;
+  variantTemplateHtml: string | null;
+  variantTemplateText: string | null;
+  variantTemplateCategory: string | null;
+  variantTemplateRegion: string | null;
   employeeEmail: string;
+  employeePhoneNumber: string | null;
   firstName: string;
   lastName: string;
   department?: string | null;
   employeeTimezone: string | null;
+  deliveryChannel: DeliveryChannelName;
 };
 
 export type SendOutcome =
   | { status: "sent"; messageId: string | null }
-  | { status: "skipped"; reason: "already_sent" | "no_template" }
+  | {
+      status: "skipped";
+      reason:
+        | "already_sent"
+        | "no_template"
+        | "voice_no_phone"
+        | "voice_not_configured"
+        | "sms_not_configured"
+        | "sms_no_phone"
+        | "sms_opted_out"
+        | "unsupported_channel";
+    }
   | { status: "deferred"; deferUntil: Date };
 
 /**
@@ -72,10 +124,14 @@ async function loadSendableCampaign(organisationId: string, campaignId: string) 
       id: campaigns.id,
       name: campaigns.name,
       status: campaigns.status,
+      deliveryChannel: campaigns.deliveryChannel,
       templateId: campaigns.emailTemplateId,
       templateSubject: emailTemplates.subject,
       templateHtml: emailTemplates.htmlBody,
       templateText: emailTemplates.textBody,
+      templateCategory: emailTemplates.category,
+      templateRegion: emailTemplates.region,
+      scenario: campaigns.scenario,
       workingHoursStart: campaigns.workingHoursStart,
       workingHoursEnd: campaigns.workingHoursEnd,
       workingDays: campaigns.workingDays,
@@ -120,6 +176,84 @@ function readStatusCode(error: unknown): number | null {
   return null;
 }
 
+function templateForTarget(campaign: LoadedCampaign, target: TargetRow) {
+  if (
+    target.variantTemplateId &&
+    target.variantTemplateSubject &&
+    target.variantTemplateHtml &&
+    target.variantTemplateText
+  ) {
+    return {
+      id: target.variantTemplateId,
+      subject: target.variantTemplateSubject,
+      htmlBody: target.variantTemplateHtml,
+      textBody: target.variantTemplateText,
+      category: target.variantTemplateCategory,
+      region: target.variantTemplateRegion,
+    };
+  }
+
+  if (!campaign.templateId || !campaign.templateSubject || !campaign.templateHtml || !campaign.templateText) {
+    return null;
+  }
+
+  return {
+    id: campaign.templateId,
+    subject: campaign.templateSubject,
+    htmlBody: campaign.templateHtml,
+    textBody: campaign.templateText,
+    category: campaign.templateCategory,
+    region: campaign.templateRegion,
+  };
+}
+
+function deliveryChannelFor(campaign: LoadedCampaign, target: TargetRow): DeliveryChannelName {
+  if (target.deliveryChannel !== "email") return target.deliveryChannel;
+  return campaign.deliveryChannel;
+}
+
+function transportForChannel(
+  organisation: OrganisationSendConfig,
+  channel: DeliveryChannelName,
+): CampaignTransport | undefined {
+  if (channel === "email" || channel === "qr" || channel === "attachment") {
+    return getTransportForOrganisation(organisation);
+  }
+  return undefined;
+}
+
+async function isSmsOptedOut(organisationId: string, phoneNumber: string) {
+  const [row] = await db
+    .select({ id: smsOptOuts.id })
+    .from(smsOptOuts)
+    .where(and(eq(smsOptOuts.organisationId, organisationId), eq(smsOptOuts.phoneNumber, phoneNumber)))
+    .limit(1);
+  return !!row;
+}
+
+async function markTargetSkipped(input: {
+  targetId: string;
+  now: Date;
+  reason: Exclude<Extract<SendOutcome, { status: "skipped" }>["reason"], "already_sent" | "no_template">;
+  metadata?: Record<string, unknown>;
+}) {
+  await db
+    .update(campaignTargets)
+    .set({ sentAt: input.now, updatedAt: input.now })
+    .where(eq(campaignTargets.id, input.targetId));
+  await db.insert(events).values({
+    campaignTargetId: input.targetId,
+    eventType: "bounced",
+    metadata: {
+      source: "campaign_send",
+      skipped: true,
+      reason: input.reason,
+      ...input.metadata,
+    },
+    createdAt: input.now,
+  });
+}
+
 /**
  * Pure send routine. Performs working-hours/timezone clamping, dispatches via
  * the org's configured transport (Resend or SMTP), and writes the `sent` event
@@ -129,15 +263,17 @@ function readStatusCode(error: unknown): number | null {
  */
 export async function runTargetSend(input: {
   organisation: OrganisationSendConfig;
-  transport: CampaignTransport;
+  transport?: CampaignTransport;
   campaign: LoadedCampaign;
   target: TargetRow;
   now?: Date;
 }): Promise<SendOutcome> {
-  const { campaign, organisation, transport, target } = input;
+  const { campaign, organisation, target } = input;
   const now = input.now ?? new Date();
+  const template = templateForTarget(campaign, target);
+  const channel = deliveryChannelFor(campaign, target);
 
-  if (!campaign.templateId || !campaign.templateSubject || !campaign.templateHtml || !campaign.templateText) {
+  if (!template && !(channel === "voice" && campaign.scenario)) {
     return { status: "skipped", reason: "no_template" };
   }
 
@@ -162,32 +298,178 @@ export async function runTargetSend(input: {
     return { status: "deferred", deferUntil: nextSlot };
   }
 
-  let result;
-  try {
-    result = await transport.send({
-      organisationName: organisation.name,
-      template: {
-        subject: campaign.templateSubject,
-        htmlBody: campaign.templateHtml,
-        textBody: campaign.templateText,
+  if (channel === "voice") {
+    const phoneNumber = target.employeePhoneNumber?.trim();
+    if (!phoneNumber) {
+      await markTargetSkipped({
+        targetId: target.id,
+        now,
+        reason: "voice_no_phone",
+        metadata: { recipient: target.employeeEmail },
+      });
+      return { status: "skipped", reason: "voice_no_phone" };
+    }
+
+    const voiceOrganisation = await mergeVoiceConfig(organisation);
+    const outcome = await sendVoiceCampaignCall({
+      organisation: voiceOrganisation,
+      campaign: {
+        id: campaign.id,
+        name: campaign.name,
+        scenario: campaign.scenario,
+        templateText: template?.textBody ?? null,
+        templateRegion: template?.region ?? campaign.templateRegion,
       },
-      employee: {
-        email: target.employeeEmail,
+      target: {
+        id: target.id,
+        token: target.token,
+        phoneNumber,
         firstName: target.firstName,
         lastName: target.lastName,
         department: target.department,
       },
-      token: target.token,
+      now,
     });
+
+    return outcome.status === "sent"
+      ? { status: "sent", messageId: outcome.messageId }
+      : { status: "skipped", reason: "voice_no_phone" };
+  }
+
+  if (channel !== "email" && channel !== "sms" && channel !== "attachment" && channel !== "usb") {
+    await markTargetSkipped({
+      targetId: target.id,
+      now,
+      reason: "unsupported_channel",
+      metadata: { channel },
+    });
+    return { status: "skipped", reason: "unsupported_channel" };
+  }
+
+  if (!template) {
+    return { status: "skipped", reason: "no_template" };
+  }
+  const selectedTemplate = template;
+
+  if (channel === "usb") {
+    const payload = buildUsbTrainingRedirectPayload({
+      token: target.token,
+      campaignName: campaign.name,
+      organisationName: organisation.name,
+      stampedAt: now,
+    });
+
+    await db.update(campaignTargets).set({ sentAt: now, updatedAt: now }).where(eq(campaignTargets.id, target.id));
+    await db.insert(events).values({
+      campaignTargetId: target.id,
+      eventType: "sent",
+      messageId: null,
+      metadata: {
+        transport: "manual_usb_drop",
+        messageId: null,
+        channel,
+        campaignVariantId: target.campaignVariantId,
+        templateId: selectedTemplate.id,
+        recipient: target.employeeEmail,
+        recipientEmail: target.employeeEmail,
+        clickUrl: payload.metadata.trainingRedirectUrl,
+        usbPayload: payload.metadata,
+      },
+      createdAt: now,
+    });
+
+    return { status: "sent", messageId: null };
+  }
+
+  let result;
+  try {
+    if (channel === "sms") {
+      const phoneNumber = normalizeSmsPhoneNumber(target.employeePhoneNumber);
+
+      if (!phoneNumber) {
+        await markTargetSkipped({
+          targetId: target.id,
+          now,
+          reason: "sms_no_phone",
+          metadata: { recipient: target.employeeEmail },
+        });
+        return { status: "skipped", reason: "sms_no_phone" };
+      }
+
+      if (!hasTwilioSmsConfig(organisation)) {
+        await markTargetSkipped({
+          targetId: target.id,
+          now,
+          reason: "sms_not_configured",
+          metadata: { recipient: target.employeeEmail, phoneNumber },
+        });
+        return { status: "skipped", reason: "sms_not_configured" };
+      }
+
+      if (await isSmsOptedOut(organisation.id, phoneNumber)) {
+        await markTargetSkipped({
+          targetId: target.id,
+          now,
+          reason: "sms_opted_out",
+          metadata: { recipient: target.employeeEmail, phoneNumber },
+        });
+        return { status: "skipped", reason: "sms_opted_out" };
+      }
+
+      result = await sendTwilioSms({
+        organisation,
+        to: phoneNumber,
+        textBody: selectedTemplate.textBody,
+        employee: {
+          email: target.employeeEmail,
+          phoneNumber,
+          firstName: target.firstName,
+          lastName: target.lastName,
+          department: target.department,
+        },
+        token: target.token,
+      });
+    } else {
+      const transport = input.transport;
+      if (!transport) {
+        throw new Error("Email transport is not configured for this campaign.");
+      }
+
+      result = await transport.send({
+        organisationName: organisation.name,
+        template: {
+          subject: selectedTemplate.subject,
+          htmlBody: selectedTemplate.htmlBody,
+          textBody: selectedTemplate.textBody,
+          category: selectedTemplate.category,
+        },
+        employee: {
+          email: target.employeeEmail,
+          firstName: target.firstName,
+          lastName: target.lastName,
+          department: target.department,
+        },
+        token: target.token,
+      });
+    }
   } catch (error) {
-    if (error instanceof TransientSendError) {
-      const retryAfterMs = error.retryAfterMs ?? 60_000;
+    if (error instanceof TransientSendError || isRetryableTwilioSmsError(error)) {
+      const retryAfterMs = error instanceof TransientSendError ? error.retryAfterMs ?? 60_000 : 60_000;
       const nextAttempt = new Date(now.getTime() + retryAfterMs);
       await db
         .update(campaignTargets)
         .set({ scheduledAt: nextAttempt, updatedAt: now })
         .where(eq(campaignTargets.id, target.id));
       return { status: "deferred", deferUntil: nextAttempt };
+    }
+    if (error instanceof TwilioSmsConfigurationError) {
+      await markTargetSkipped({
+        targetId: target.id,
+        now,
+        reason: "sms_not_configured",
+        metadata: { message: error.message },
+      });
+      return { status: "skipped", reason: "sms_not_configured" };
     }
     const statusCode = readStatusCode(error);
     if (statusCode != null && statusCode >= 400 && statusCode < 500) {
@@ -207,11 +489,19 @@ export async function runTargetSend(input: {
       metadata: {
         transport: result.transport,
         messageId: result.messageId,
-        from: senderAddressFor(organisation),
-        recipient: target.employeeEmail,
+        channel,
+        campaignVariantId: target.campaignVariantId,
+        templateId: selectedTemplate.id,
+        from: "from" in result ? result.from : senderAddressFor(organisation),
+        messagingServiceSid: "messagingServiceSid" in result ? result.messagingServiceSid : undefined,
+        recipient: channel === "sms" && "to" in result ? result.to : target.employeeEmail,
+        recipientEmail: target.employeeEmail,
         clickUrl: result.clickUrl,
-        pixelUrl: result.pixelUrl,
-        replyAddress: result.replyAddress,
+        qrUrl: "qrUrl" in result ? result.qrUrl : undefined,
+        pixelUrl: "pixelUrl" in result ? result.pixelUrl : undefined,
+        replyAddress: "replyAddress" in result ? result.replyAddress : undefined,
+        attachments: "attachments" in result ? result.attachments : undefined,
+        twilioStatus: "status" in result ? result.status : undefined,
       },
       createdAt: now,
     })
@@ -221,13 +511,24 @@ export async function runTargetSend(input: {
 }
 
 async function loadTargets(campaignId: string, organisationId: string): Promise<TargetRow[]> {
+  const variantTemplates = alias(emailTemplates, "variant_template");
+
   return db
     .select({
       id: campaignTargets.id,
       token: campaignTargets.uniqueToken,
       sentAt: campaignTargets.sentAt,
       scheduledAt: campaignTargets.scheduledAt,
+      campaignVariantId: campaignTargets.campaignVariantId,
+      variantTemplateId: variantTemplates.id,
+      variantTemplateSubject: variantTemplates.subject,
+      variantTemplateHtml: variantTemplates.htmlBody,
+      variantTemplateText: variantTemplates.textBody,
+      variantTemplateCategory: variantTemplates.category,
+      variantTemplateRegion: variantTemplates.region,
+      deliveryChannel: campaignTargets.deliveryChannel,
       employeeEmail: employees.email,
+      employeePhoneNumber: employees.phoneNumber,
       firstName: employees.firstName,
       lastName: employees.lastName,
       department: employees.department,
@@ -235,17 +536,30 @@ async function loadTargets(campaignId: string, organisationId: string): Promise<
     })
     .from(campaignTargets)
     .innerJoin(employees, eq(employees.id, campaignTargets.employeeId))
+    .leftJoin(campaignVariants, eq(campaignVariants.id, campaignTargets.campaignVariantId))
+    .leftJoin(variantTemplates, eq(variantTemplates.id, campaignVariants.templateId))
     .where(and(eq(campaignTargets.campaignId, campaignId), eq(employees.organisationId, organisationId)));
 }
 
 async function loadTargetById(campaignId: string, organisationId: string, targetId: string): Promise<TargetRow | null> {
+  const variantTemplates = alias(emailTemplates, "variant_template");
+
   const [target] = await db
     .select({
       id: campaignTargets.id,
       token: campaignTargets.uniqueToken,
       sentAt: campaignTargets.sentAt,
       scheduledAt: campaignTargets.scheduledAt,
+      campaignVariantId: campaignTargets.campaignVariantId,
+      variantTemplateId: variantTemplates.id,
+      variantTemplateSubject: variantTemplates.subject,
+      variantTemplateHtml: variantTemplates.htmlBody,
+      variantTemplateText: variantTemplates.textBody,
+      variantTemplateCategory: variantTemplates.category,
+      variantTemplateRegion: variantTemplates.region,
+      deliveryChannel: campaignTargets.deliveryChannel,
       employeeEmail: employees.email,
+      employeePhoneNumber: employees.phoneNumber,
       firstName: employees.firstName,
       lastName: employees.lastName,
       department: employees.department,
@@ -253,6 +567,8 @@ async function loadTargetById(campaignId: string, organisationId: string, target
     })
     .from(campaignTargets)
     .innerJoin(employees, eq(employees.id, campaignTargets.employeeId))
+    .leftJoin(campaignVariants, eq(campaignVariants.id, campaignTargets.campaignVariantId))
+    .leftJoin(variantTemplates, eq(variantTemplates.id, campaignVariants.templateId))
     .where(
       and(
         eq(campaignTargets.id, targetId),
@@ -288,18 +604,48 @@ export async function enqueueCampaignDispatch(input: {
   campaignId: string;
 }): Promise<{ campaignId: string; targetCount: number; eventIds: string[] }> {
   const { organisation } = input;
-  // Validate transport credentials exist; throws if not configured.
-  getTransportForOrganisation(organisation);
 
   const [campaign] = await loadSendableCampaign(organisation.id, input.campaignId);
 
-  if (!campaign?.templateId || !campaign.templateSubject || !campaign.templateHtml || !campaign.templateText) {
+  if (
+    !campaign ||
+    (campaign.deliveryChannel === "voice"
+      ? !campaign.templateText && !campaign.scenario
+      : !campaign.templateId || !campaign.templateSubject || !campaign.templateHtml || !campaign.templateText)
+  ) {
     throw new Error("This campaign needs a valid template before it can be sent.");
+  }
+
+  if (campaign.deliveryChannel === "voice") {
+    await assertVoiceCampaignCanSend({
+      organisation,
+      campaign: {
+        id: campaign.id,
+        name: campaign.name,
+        scenario: campaign.scenario,
+        templateText: campaign.templateText,
+        templateRegion: campaign.templateRegion,
+      },
+    });
+  } else if (campaign.deliveryChannel === "sms") {
+    if (!hasTwilioSmsConfig(organisation)) {
+      throw new Error("Configure Twilio SMS credentials before launching this campaign.");
+    }
+  } else if (campaign.deliveryChannel === "usb") {
+    // USB-drop campaigns generate a stamped training redirect payload; no mail transport is required.
+  } else {
+    // Validate transport credentials exist; throws if not configured.
+    getTransportForOrganisation(organisation);
   }
 
   if (!["draft", "scheduled", "paused", "running"].includes(campaign.status)) {
     throw new Error("This campaign has already been launched.");
   }
+
+  await assertCampaignDeepfakeLaunchAllowed({
+    organisationId: organisation.id,
+    campaignId: campaign.id,
+  });
 
   const unsentTargetIds = await loadUnsentTargetIds(campaign.id, organisation.id);
 
@@ -334,17 +680,28 @@ export async function enqueueCampaignDispatch(input: {
  */
 export async function sendCampaignNow(input: { organisation: OrganisationSendConfig; campaignId: string }) {
   const { organisation } = input;
-  const transport = getTransportForOrganisation(organisation);
 
   const [campaign] = await loadSendableCampaign(organisation.id, input.campaignId);
 
-  if (!campaign?.templateId || !campaign.templateSubject || !campaign.templateHtml || !campaign.templateText) {
+  if (
+    !campaign ||
+    (campaign.deliveryChannel === "voice"
+      ? !campaign.templateText && !campaign.scenario
+      : !campaign.templateId || !campaign.templateSubject || !campaign.templateHtml || !campaign.templateText)
+  ) {
     throw new Error("This campaign needs a valid template before it can be sent.");
   }
 
   if (!["draft", "scheduled", "paused", "running"].includes(campaign.status)) {
     throw new Error("This campaign has already been launched.");
   }
+
+  await assertCampaignDeepfakeLaunchAllowed({
+    organisationId: organisation.id,
+    campaignId: campaign.id,
+  });
+
+  const transport = transportForChannel(organisation, campaign.deliveryChannel);
 
   const targets = await loadTargets(campaign.id, organisation.id);
   const unsentTargets = targets.filter((target) => !target.sentAt);
@@ -374,7 +731,6 @@ export async function sendCampaignTargetNow(input: {
   targetId: string;
 }) {
   const { organisation } = input;
-  const transport = getTransportForOrganisation(organisation);
 
   const [campaign] = await loadSendableCampaign(organisation.id, input.campaignId);
 
@@ -386,11 +742,18 @@ export async function sendCampaignTargetNow(input: {
     throw new Error("This campaign has already been launched.");
   }
 
+  await assertCampaignDeepfakeLaunchAllowed({
+    organisationId: organisation.id,
+    campaignId: campaign.id,
+  });
+
   const target = await loadTargetById(campaign.id, organisation.id, input.targetId);
 
   if (!target) {
     throw new Error("Campaign target is not available.");
   }
+
+  const transport = transportForChannel(organisation, deliveryChannelFor(campaign, target));
 
   await db.update(campaigns).set({ status: "running", updatedAt: new Date() }).where(eq(campaigns.id, campaign.id));
   const outcome = await runTargetSend({ organisation, transport, campaign, target });
@@ -408,6 +771,7 @@ async function loadOrganisationSendConfig(organisationId: string): Promise<Organ
     .select({
       id: organisations.id,
       name: organisations.name,
+      dataRegion: organisations.dataRegion,
       senderFromAddress: organisations.senderFromAddress,
       resendApiKeyEncrypted: organisations.resendApiKeyEncrypted,
       sendingTransport: organisations.sendingTransport,
@@ -417,6 +781,15 @@ async function loadOrganisationSendConfig(organisationId: string): Promise<Organ
       smtpPasswordEncrypted: organisations.smtpPasswordEncrypted,
       smtpSecure: organisations.smtpSecure,
       smtpFromAddress: organisations.smtpFromAddress,
+      twilioAccountSidEncrypted: organisations.twilioAccountSidEncrypted,
+      twilioAuthTokenEncrypted: organisations.twilioAuthTokenEncrypted,
+      twilioMessagingServiceSidEncrypted: organisations.twilioMessagingServiceSidEncrypted,
+      twilioSenderPhonePool: organisations.twilioSenderPhonePool,
+      twilioOptOutKeywords: organisations.twilioOptOutKeywords,
+      twilioVoiceFromNumberEncrypted: organisations.twilioVoiceFromNumberEncrypted,
+      voiceProvider: organisations.voiceProvider,
+      ttsProvider: organisations.ttsProvider,
+      voiceConsentRegions: organisations.voiceConsentRegions,
     })
     .from(organisations)
     .where(eq(organisations.id, organisationId))
@@ -455,18 +828,23 @@ export async function runCampaignTargetSend(input: {
   if (!organisation) {
     throw new Error("Organisation is not available.");
   }
-  const transport = getTransportForOrganisation(organisation);
 
   const [campaign] = await loadSendableCampaign(organisation.id, input.campaignId);
   if (!campaign) {
     throw new Error("Campaign is not available.");
   }
 
+  await assertCampaignDeepfakeLaunchAllowed({
+    organisationId: organisation.id,
+    campaignId: campaign.id,
+  });
+
   const target = await loadTargetById(campaign.id, organisation.id, input.targetId);
   if (!target) {
     throw new Error("Campaign target is not available.");
   }
 
+  const transport = transportForChannel(organisation, deliveryChannelFor(campaign, target));
   const outcome = await runTargetSend({ organisation, transport, campaign, target });
   return { ...outcome, campaignId: campaign.id, targetId: target.id };
 }

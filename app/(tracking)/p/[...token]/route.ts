@@ -13,12 +13,14 @@ export async function GET(
 ) {
   const { token } = await params;
   const trackingToken = token.join("/").replace(/\.gif$/, "");
+  const source = request.nextUrl.searchParams.get("source")?.slice(0, 64) ?? "email_pixel";
 
   await recordTrackingEvent({
     token: trackingToken,
     eventType: "opened",
     ipAddress: request.headers.get("x-forwarded-for"),
     userAgent: request.headers.get("user-agent"),
+    metadata: { source },
   });
 
   return new Response(transparentGif, {

@@ -1,4 +1,5 @@
 import { buildCampaignReportAddress, buildReportMarker } from "@/lib/email/reporting";
+import { qrDataUriFor, qrImageMarkup, qrSvgFor } from "@/lib/email/qr";
 import { publicAppUrl } from "@/lib/tracking/public-url";
 
 type TemplateLike = {
@@ -30,6 +31,7 @@ export function buildCampaignTrackingUrls(token: string) {
 
   return {
     clickUrl: `${baseUrl}/c/${token}`,
+    qrUrl: `${baseUrl}/c/${token}?source=qr`,
     pixelUrl: `${baseUrl}/p/${token}.gif`,
     reportUrl: `${baseUrl}/api/report`,
     replyAddress: buildCampaignReportAddress(token),
@@ -43,6 +45,9 @@ export function renderCampaignEmail(input: {
   token: string;
 }) {
   const urls = buildCampaignTrackingUrls(input.token);
+  const qrSvg = qrSvgFor(urls.qrUrl);
+  const qrDataUri = qrDataUriFor(urls.qrUrl);
+  const qrImage = qrImageMarkup(urls.qrUrl);
   const tokens = {
     organisationName: input.organisationName,
     firstName: input.employee.firstName,
@@ -51,6 +56,14 @@ export function renderCampaignEmail(input: {
     recipientEmail: input.employee.email,
     department: input.employee.department ?? "",
     trackingUrl: urls.clickUrl,
+    trackingQrUrl: urls.qrUrl,
+    qrUrl: urls.qrUrl,
+    qrCode: qrImage,
+    trackingQrCode: qrImage,
+    qrCodeSvg: qrSvg,
+    trackingQrSvg: qrSvg,
+    qrCodeDataUri: qrDataUri,
+    trackingQrDataUri: qrDataUri,
     trackingPixel: `<img src="${urls.pixelUrl}" width="1" height="1" alt="" style="display:none;border:0;height:1px;width:1px" />`,
     reportUrl: urls.reportUrl,
     replyAddress: urls.replyAddress,

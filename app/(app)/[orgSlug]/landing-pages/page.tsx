@@ -16,6 +16,11 @@ const pageTypes = [
   "training_redirect",
   "credential_harvest",
   "attachment_warning",
+  "mfa_push_simulator",
+  "oauth_consent",
+  "usb_drop",
+  "voice_callback",
+  "deepfake_disclosure",
 ] as const;
 
 export default async function LandingPagesPage({

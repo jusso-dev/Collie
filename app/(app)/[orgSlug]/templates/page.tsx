@@ -21,7 +21,21 @@ const categories = [
   "tax",
   "telecom",
   "document_share",
+  "attachment_pdf",
+  "attachment_html",
+  "usb_drop",
+  "oauth_consent",
+  "mfa_push",
+  "sms_lure",
+  "vishing",
+  "deepfake_exec",
 ] as const;
+
+const deliveryChannels = ["email", "sms", "voice", "qr", "attachment", "usb"] as const;
+
+const sampleQrDataUri =
+  "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2029%2029%22%3E%3Cpath%20fill%3D%22%23fff%22%20d%3D%22M0%200h29v29H0z%22%2F%3E%3Cpath%20fill%3D%22%23111827%22%20d%3D%22M4%204h7v7H4zm10%200h3v3h-3zm4%200h7v7h-7zM6%206v3h3V6zm14%200v3h3V6zM4%2018h7v7H4zm2%202v3h3v-3zm8-9h3v3h-3zm5%204h2v2h-2zm4%204h2v2h-2zm-9%204h3v2h-3z%22%2F%3E%3C%2Fsvg%3E";
+const sampleQrImage = `<img src="${sampleQrDataUri}" width="120" height="120" alt="QR code" style="display:block;border:0;width:120px;height:120px" />`;
 
 function previewHtml(html: string, replacements: Record<string, string>) {
   const replaced = Object.entries(replacements).reduce(
@@ -47,6 +61,7 @@ export default async function TemplatesPage({
       id: emailTemplates.id,
       name: emailTemplates.name,
       category: emailTemplates.category,
+      deliveryChannel: emailTemplates.deliveryChannel,
       difficulty: emailTemplates.difficulty,
       organisationId: emailTemplates.organisationId,
       subject: emailTemplates.subject,
@@ -92,6 +107,7 @@ export default async function TemplatesPage({
                     Difficulty {template.difficulty}
                   </Badge>
                   <Badge variant="secondary">{template.category.replaceAll("_", " ")}</Badge>
+                  <Badge variant="outline">{template.deliveryChannel}</Badge>
                 </div>
               </div>
             </summary>
@@ -107,6 +123,21 @@ export default async function TemplatesPage({
                     <div className="space-y-2">
                       <Label htmlFor={`name-${template.id}`}>Name</Label>
                       <Input id={`name-${template.id}`} name="name" defaultValue={template.name} required />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor={`delivery-${template.id}`}>Delivery channel</Label>
+                      <select
+                        id={`delivery-${template.id}`}
+                        name="deliveryChannel"
+                        defaultValue={template.deliveryChannel}
+                        className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm"
+                      >
+                        {deliveryChannels.map((channel) => (
+                          <option key={channel} value={channel}>
+                            {channel.replaceAll("_", " ")}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="space-y-2">
@@ -226,6 +257,14 @@ export default async function TemplatesPage({
                             "{{department}}": "Finance",
                             "{{organisationName}}": organisation.name,
                             "{{trackingUrl}}": "https://mail.example.test/c/token",
+                            "{{trackingQrUrl}}": "https://mail.example.test/c/token?source=qr",
+                            "{{qrUrl}}": "https://mail.example.test/c/token?source=qr",
+                            "{{qrCode}}": sampleQrImage,
+                            "{{trackingQrCode}}": sampleQrImage,
+                            "{{qrCodeDataUri}}": sampleQrDataUri,
+                            "{{trackingQrDataUri}}": sampleQrDataUri,
+                            "{{qrCodeSvg}}": "",
+                            "{{trackingQrSvg}}": "",
                             "{{trackingPixel}}": "",
                           }),
                         }}

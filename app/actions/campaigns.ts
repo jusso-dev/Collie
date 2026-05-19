@@ -24,6 +24,7 @@ import { enqueueCampaignDispatch, sendCampaignNow } from "@/lib/campaigns/send-c
 import { db } from "@/lib/db/client";
 import {
   campaignTargets,
+  campaignVariants,
   campaigns,
   emailTemplates,
   employeeGroups,
@@ -69,9 +70,62 @@ const campaignSchema = z.object({
   exclusionRuleIds: z.array(z.string()).default([]),
 });
 
+type CampaignVariantInput = {
+  templateId: string;
+  weight: number;
+};
+
 function valueFromForm(formData: FormData, key: string) {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
+}
+
+function parseVariantWeight(value: string, fallback: number) {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(1000, Math.round(parsed)));
+}
+
+function parseCampaignVariants(formData: FormData, defaultTemplateId: string): CampaignVariantInput[] {
+  const variants = new Map<string, CampaignVariantInput>();
+  variants.set(defaultTemplateId, {
+    templateId: defaultTemplateId,
+    weight: parseVariantWeight(valueFromForm(formData, "defaultVariantWeight"), 100),
+  });
+
+  for (const value of formData.getAll("variantTemplateIds")) {
+    if (typeof value !== "string") continue;
+    const templateId = value.trim();
+    if (!templateId || variants.has(templateId)) continue;
+    variants.set(templateId, {
+      templateId,
+      weight: parseVariantWeight(valueFromForm(formData, `variantWeight:${templateId}`), 50),
+    });
+  }
+
+  return Array.from(variants.values());
+}
+
+function stableWeightedVariant<T extends { id: string; weight: number }>(input: {
+  campaignId: string;
+  employeeId: string;
+  variants: T[];
+}): T {
+  const totalWeight = input.variants.reduce((sum, variant) => sum + Math.max(0, variant.weight), 0);
+  if (totalWeight <= 0) return input.variants[0];
+
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${input.campaignId}:${input.employeeId}`)
+    .digest();
+  const bucket = digest.readUInt32BE(0) % totalWeight;
+  let cumulative = 0;
+  for (const variant of input.variants) {
+    cumulative += Math.max(0, variant.weight);
+    if (bucket < cumulative) return variant;
+  }
+  return input.variants[input.variants.length - 1];
 }
 
 export async function createCampaign(formData: FormData) {
@@ -94,6 +148,8 @@ export async function createCampaign(formData: FormData) {
       .filter((value): value is string => typeof value === "string"),
   });
   const organisation = await requireOrganisationForSlug(data.orgSlug);
+  const variantInputs = parseCampaignVariants(formData, data.emailTemplateId);
+  const variantTemplateIds = variantInputs.map((variant) => variant.templateId);
 
   const workingHoursStart = parseTimeOfDay(data.workingHoursStart, DEFAULT_WORKING_WINDOW.startMinute);
   const workingHoursEnd = parseTimeOfDay(data.workingHoursEnd, DEFAULT_WORKING_WINDOW.endMinute);
@@ -109,19 +165,27 @@ export async function createCampaign(formData: FormData) {
     allowedIsoDays: workingDays,
   };
 
-  const [template] = await db
-    .select({ id: emailTemplates.id })
+  const templateRows = await db
+    .select({ id: emailTemplates.id, deliveryChannel: emailTemplates.deliveryChannel })
     .from(emailTemplates)
     .where(
       and(
-        eq(emailTemplates.id, data.emailTemplateId),
+        inArray(emailTemplates.id, variantTemplateIds),
         or(eq(emailTemplates.organisationId, organisation.id), sql`${emailTemplates.organisationId} is null`),
       ),
-    )
-    .limit(1);
+    );
+  const template = templateRows.find((row) => row.id === data.emailTemplateId);
+  const validTemplateIds = new Set(
+    templateRows
+      .filter((row) => row.deliveryChannel === template?.deliveryChannel)
+      .map((row) => row.id),
+  );
 
   if (!template) {
     throw new Error("Choose a template before creating the campaign.");
+  }
+  if (variantInputs.some((variant) => !validTemplateIds.has(variant.templateId))) {
+    throw new Error("Choose valid templates with the same delivery channel for each variant.");
   }
 
   const [landingPage] = await db
@@ -273,6 +337,7 @@ export async function createCampaign(formData: FormData) {
       name: data.name,
       emailTemplateId: template.id,
       landingPageId: landingPage.id,
+      deliveryChannel: template.deliveryChannel,
       targetGroupIds,
       sendStrategy: data.sendStrategy,
       status,
@@ -289,6 +354,21 @@ export async function createCampaign(formData: FormData) {
     })
     .returning({ id: campaigns.id });
 
+  const createdVariants = await db
+    .insert(campaignVariants)
+    .values(
+      variantInputs.map((variant) => ({
+        campaignId: campaign.id,
+        templateId: variant.templateId,
+        weight: variant.weight,
+      })),
+    )
+    .returning({
+      id: campaignVariants.id,
+      templateId: campaignVariants.templateId,
+      weight: campaignVariants.weight,
+    });
+
   const targetIds = targetEmployees.map((employee) => employee.id);
   const employeeMeta = targetIds.length
     ? await db
@@ -299,23 +379,33 @@ export async function createCampaign(formData: FormData) {
   const timezoneById = new Map(employeeMeta.map((row) => [row.id, row.timezone]));
 
   await db.insert(campaignTargets).values(
-    targetEmployees.map((employee, index) => ({
-      campaignId: campaign.id,
-      employeeId: employee.id,
-      uniqueToken: crypto.randomBytes(24).toString("base64url"),
-      scheduledAt:
-        status === "scheduled" && startAt
-          ? scheduledTargetTime({
-              index,
-              total: targetEmployees.length,
-              strategy: data.sendStrategy,
-              startAt,
-              endAt,
-              timeZone: respectEmployeeTimezone ? timezoneById.get(employee.id) ?? "Australia/Sydney" : null,
-              window: respectEmployeeTimezone ? window : null,
-            })
-          : null,
-    })),
+    targetEmployees.map((employee, index) => {
+      const variant = stableWeightedVariant({
+        campaignId: campaign.id,
+        employeeId: employee.id,
+        variants: createdVariants,
+      });
+
+      return {
+        campaignId: campaign.id,
+        employeeId: employee.id,
+        campaignVariantId: variant.id,
+        deliveryChannel: template.deliveryChannel,
+        uniqueToken: crypto.randomBytes(24).toString("base64url"),
+        scheduledAt:
+          status === "scheduled" && startAt
+            ? scheduledTargetTime({
+                index,
+                total: targetEmployees.length,
+                strategy: data.sendStrategy,
+                startAt,
+                endAt,
+                timeZone: respectEmployeeTimezone ? timezoneById.get(employee.id) ?? "Australia/Sydney" : null,
+                window: respectEmployeeTimezone ? window : null,
+              })
+            : null,
+      };
+    }),
   );
 
   await recordAudit({
@@ -329,6 +419,7 @@ export async function createCampaign(formData: FormData) {
       status,
       sendStrategy: data.sendStrategy,
       targetCount: targetEmployees.length,
+      variants: variantInputs,
       scheduledStartAt: startAt?.toISOString() ?? null,
     },
   });

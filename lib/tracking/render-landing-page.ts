@@ -3,6 +3,13 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { campaignTargets, campaigns, emailTemplates, employees, landingPages, trainingModules } from "@/lib/db/schema";
 import { inferBrandProfile, landingLogoMarkup } from "@/lib/email/brand-assets";
+import { renderMfaPushPage } from "@/lib/tracking/mfa-push-page";
+import { renderOAuthConsentPage, renderOAuthConsentTrainingPage } from "@/lib/tracking/oauth-consent-page";
+
+type RenderLandingPageOptions = {
+  mfaOutcome?: "approved" | "reported";
+  submittedScenario?: string;
+};
 
 function replaceTokens(value: string, tokens: Record<string, string>) {
   return Object.entries(tokens).reduce(
@@ -31,7 +38,7 @@ function extractTemplateBrandColour(html?: string | null) {
   return buttonMatch?.[1] ?? null;
 }
 
-export async function renderLandingPageForToken(token: string) {
+export async function renderLandingPageForToken(token: string, options: RenderLandingPageOptions = {}) {
   const [row] = await db
     .select({
       token: campaignTargets.uniqueToken,
@@ -104,6 +111,41 @@ export async function renderLandingPageForToken(token: string) {
     brandColour: extractTemplateBrandColour(row.templateHtml),
     logoDomain: extractTemplateLogoDomain(row.templateHtml),
   };
+
+  if (row.landingType === "mfa_push_simulator") {
+    return renderMfaPushPage({
+      firstName: row.firstName,
+      email: row.email,
+      campaignName: row.campaignName,
+      brandName: brand.displayName,
+      brandInitial: brand.initial,
+      brandColour: brand.colour,
+      brandLogo: landingLogoMarkup(brandInput),
+      trainingTitle: row.trainingTitle ?? "Handling unexpected MFA prompts",
+      trainingDescription:
+        row.trainingDescription ?? "Only approve MFA prompts for sign-ins you started. Deny and report anything unexpected.",
+      trainingHtml: row.trainingHtml ?? "",
+      outcome: options.mfaOutcome,
+    });
+  }
+
+  if (row.landingType === "oauth_consent") {
+    const input = {
+      token,
+      firstName: row.firstName,
+      recipientEmail: row.email,
+      campaignName: row.campaignName,
+      brandName: brand.displayName,
+      brandColour: brand.colour,
+      trainingTitle: row.trainingTitle,
+      trainingDescription: row.trainingDescription,
+      trainingHtml: row.trainingHtml,
+    };
+
+    return options.submittedScenario === "oauth_consent"
+      ? renderOAuthConsentTrainingPage(input)
+      : renderOAuthConsentPage(input);
+  }
 
   return replaceTokens(row.landingHtml, {
     firstName: row.firstName,

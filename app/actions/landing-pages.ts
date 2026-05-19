@@ -12,7 +12,17 @@ const landingPageSchema = z.object({
   orgSlug: z.string().min(1),
   pageId: z.string().optional(),
   name: z.string().trim().min(2).max(120),
-  type: z.enum(["credential_harvest", "attachment_warning", "training_redirect", "friendly_simulation"]),
+  type: z.enum([
+    "credential_harvest",
+    "attachment_warning",
+    "training_redirect",
+    "friendly_simulation",
+    "mfa_push_simulator",
+    "oauth_consent",
+    "usb_drop",
+    "voice_callback",
+    "deepfake_disclosure",
+  ]),
   html: z.string().trim().min(20),
   linkedTrainingModuleId: z.string().optional(),
 });

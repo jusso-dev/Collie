@@ -39,7 +39,12 @@ export default async function CampaignsPage({
       difficulty: emailTemplates.difficulty,
     })
     .from(emailTemplates)
-    .where(or(eq(emailTemplates.organisationId, organisation.id), sql`${emailTemplates.organisationId} is null`))
+    .where(
+      and(
+        eq(emailTemplates.deliveryChannel, "email"),
+        or(eq(emailTemplates.organisationId, organisation.id), sql`${emailTemplates.organisationId} is null`),
+      ),
+    )
     .orderBy(emailTemplates.name);
   const landingPageOptions = await db
     .select({
@@ -170,6 +175,56 @@ export default async function CampaignsPage({
                   ))}
                 </select>
               </div>
+              <fieldset className="rounded-lg border border-border p-3">
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Template variants</legend>
+                <div className="mt-2 space-y-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="defaultVariantWeight">Default template weight</Label>
+                    <Input
+                      id="defaultVariantWeight"
+                      name="defaultVariantWeight"
+                      type="number"
+                      min={1}
+                      max={1000}
+                      step={1}
+                      defaultValue={100}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    {templates.map((template) => (
+                      <label
+                        key={template.id}
+                        className="grid gap-2 rounded-lg border border-border px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_86px]"
+                      >
+                        <span className="flex items-start gap-2">
+                          <Checkbox name="variantTemplateIds" value={template.id} />
+                          <span>
+                            <span className="block font-medium">{template.name}</span>
+                            <span className="block text-xs text-muted-foreground">
+                              difficulty {template.difficulty}, {template.category.replaceAll("_", " ")}
+                            </span>
+                          </span>
+                        </span>
+                        <span className="space-y-1">
+                          <span className="block text-xs font-medium text-muted-foreground">Weight</span>
+                          <Input
+                            aria-label={`${template.name} variant weight`}
+                            name={`variantWeight:${template.id}`}
+                            type="number"
+                            min={1}
+                            max={1000}
+                            step={1}
+                            defaultValue={50}
+                          />
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    Leave variants unchecked for a single-template campaign. Checked templates are assigned at target-build time using their weights.
+                  </p>
+                </div>
+              </fieldset>
               <div className="space-y-2">
                 <Label htmlFor="sendStrategy">Send strategy</Label>
                 <select

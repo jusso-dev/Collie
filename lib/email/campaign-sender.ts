@@ -2,6 +2,7 @@ import { Resend } from "resend";
 import nodemailer from "nodemailer";
 
 import { openTotpSecret } from "@/lib/auth/totp";
+import { renderSimulationAttachments, type SimulationAttachmentPayload } from "@/lib/attachments/renderers";
 import { renderCampaignEmail } from "@/lib/email/campaign-renderer";
 
 export type SendingTransportName = "resend" | "smtp";
@@ -12,6 +13,7 @@ export type CampaignSendInput = {
     subject: string;
     htmlBody: string;
     textBody: string;
+    category?: string | null;
   };
   employee: {
     email: string;
@@ -29,10 +31,12 @@ export type CampaignSendResult = {
   html: string;
   text: string;
   clickUrl: string;
+  qrUrl: string;
   pixelUrl: string;
   reportUrl: string;
   replyAddress: string;
   headers: Record<string, string>;
+  attachments?: Array<SimulationAttachmentPayload["metadata"]>;
 };
 
 export interface CampaignTransport {
@@ -76,6 +80,18 @@ type ResendTransportConfig = {
   organisationName: string;
 };
 
+function attachmentMailParts(attachments: SimulationAttachmentPayload[]) {
+  return attachments.map((attachment) => ({
+    filename: attachment.filename,
+    content: attachment.content,
+    contentType: attachment.contentType,
+  }));
+}
+
+function attachmentMetadata(attachments: SimulationAttachmentPayload[]) {
+  return attachments.map((attachment) => attachment.metadata);
+}
+
 class ResendTransport implements CampaignTransport {
   readonly name = "resend" as const;
   private readonly config: ResendTransportConfig;
@@ -91,6 +107,13 @@ class ResendTransport implements CampaignTransport {
       employee: input.employee,
       token: input.token,
     });
+    const attachments = renderSimulationAttachments({
+      kind: input.template.category,
+      organisationName: this.config.organisationName,
+      subject: rendered.subject,
+      employee: input.employee,
+      token: input.token,
+    });
 
     const resend = new Resend(this.config.apiKey);
 
@@ -103,6 +126,7 @@ class ResendTransport implements CampaignTransport {
         html: rendered.html,
         text: rendered.text,
         headers: rendered.headers,
+        attachments: attachments.length ? attachmentMailParts(attachments) : undefined,
       });
 
       if (response.error) {
@@ -116,10 +140,12 @@ class ResendTransport implements CampaignTransport {
         html: rendered.html,
         text: rendered.text,
         clickUrl: rendered.clickUrl,
+        qrUrl: rendered.qrUrl,
         pixelUrl: rendered.pixelUrl,
         reportUrl: rendered.reportUrl,
         replyAddress: rendered.replyAddress,
         headers: rendered.headers,
+        attachments: attachments.length ? attachmentMetadata(attachments) : undefined,
       };
     } catch (error) {
       if (isResendRateLimitError(error)) {
@@ -193,6 +219,13 @@ class SmtpTransport implements CampaignTransport {
       employee: input.employee,
       token: input.token,
     });
+    const attachments = renderSimulationAttachments({
+      kind: input.template.category,
+      organisationName: this.config.organisationName,
+      subject: rendered.subject,
+      employee: input.employee,
+      token: input.token,
+    });
 
     const transporter = this.buildTransporter();
 
@@ -205,6 +238,7 @@ class SmtpTransport implements CampaignTransport {
         html: rendered.html,
         text: rendered.text,
         headers: rendered.headers,
+        attachments: attachments.length ? attachmentMailParts(attachments) : undefined,
       });
 
       return {
@@ -214,10 +248,12 @@ class SmtpTransport implements CampaignTransport {
         html: rendered.html,
         text: rendered.text,
         clickUrl: rendered.clickUrl,
+        qrUrl: rendered.qrUrl,
         pixelUrl: rendered.pixelUrl,
         reportUrl: rendered.reportUrl,
         replyAddress: rendered.replyAddress,
         headers: rendered.headers,
+        attachments: attachments.length ? attachmentMetadata(attachments) : undefined,
       };
     } catch (error) {
       const code = extractSmtpResponseCode(error);

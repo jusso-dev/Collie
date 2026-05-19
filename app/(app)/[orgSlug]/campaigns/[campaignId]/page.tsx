@@ -1,14 +1,30 @@
 import { and, desc, eq } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import Link from "next/link";
 
 import { markTargetEvent, updateCampaignStatus } from "@/app/actions/campaigns";
+import { recordDeepfakeCampaignApproval, registerDeepfakeAsset } from "@/app/actions/deepfake";
 import { AutoRefresh } from "@/components/app/auto-refresh";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { db } from "@/lib/db/client";
-import { campaignTargets, campaigns, emailTemplates, employees, events, landingPages } from "@/lib/db/schema";
+import {
+  campaignApprovals,
+  campaignTargets,
+  campaignVariants,
+  campaigns,
+  deepfakeAssets,
+  emailTemplates,
+  employees,
+  events,
+  landingPages,
+  users,
+} from "@/lib/db/schema";
 import { buildCampaignTrackingUrls } from "@/lib/email/campaign-renderer";
 import { trackingUrlWarning } from "@/lib/tracking/public-url";
 
@@ -54,7 +70,9 @@ export default async function CampaignResultsPage({
       endAt: campaigns.endAt,
       scheduleCron: campaigns.scheduleCron,
       templateName: emailTemplates.name,
+      templateCategory: emailTemplates.category,
       landingPageName: landingPages.name,
+      landingPageType: landingPages.type,
     })
     .from(campaigns)
     .leftJoin(emailTemplates, eq(emailTemplates.id, campaigns.emailTemplateId))
@@ -73,10 +91,23 @@ export default async function CampaignResultsPage({
     );
   }
 
+  const variantTemplates = alias(emailTemplates, "variant_template");
+  const variants = await db
+    .select({
+      id: campaignVariants.id,
+      templateId: campaignVariants.templateId,
+      weight: campaignVariants.weight,
+      templateName: variantTemplates.name,
+    })
+    .from(campaignVariants)
+    .leftJoin(variantTemplates, eq(variantTemplates.id, campaignVariants.templateId))
+    .where(eq(campaignVariants.campaignId, campaign.id))
+    .orderBy(campaignVariants.createdAt);
   const targets = await db
     .select({
       id: campaignTargets.id,
       token: campaignTargets.uniqueToken,
+      campaignVariantId: campaignTargets.campaignVariantId,
       scheduledAt: campaignTargets.scheduledAt,
       sentAt: campaignTargets.sentAt,
       openedAt: campaignTargets.openedAt,
@@ -105,11 +136,74 @@ export default async function CampaignResultsPage({
     .innerJoin(campaignTargets, eq(campaignTargets.id, events.campaignTargetId))
     .where(eq(campaignTargets.campaignId, campaign.id))
     .orderBy(desc(events.createdAt));
+  const deepfakeAssetRows = await db
+    .select({
+      id: deepfakeAssets.id,
+      executiveName: deepfakeAssets.executiveName,
+      assetUrl: deepfakeAssets.assetUrl,
+      watermark: deepfakeAssets.watermark,
+      provenance: deepfakeAssets.provenance,
+      status: deepfakeAssets.status,
+      expiresAt: deepfakeAssets.expiresAt,
+      createdAt: deepfakeAssets.createdAt,
+    })
+    .from(deepfakeAssets)
+    .where(eq(deepfakeAssets.campaignId, campaign.id))
+    .orderBy(desc(deepfakeAssets.createdAt));
+  const approvalRows = await db
+    .select({
+      id: campaignApprovals.id,
+      approverUserId: campaignApprovals.approverUserId,
+      decision: campaignApprovals.decision,
+      reason: campaignApprovals.reason,
+      createdAt: campaignApprovals.createdAt,
+      approverName: users.name,
+      approverEmail: users.email,
+      approverRole: users.role,
+      approverActive: users.active,
+    })
+    .from(campaignApprovals)
+    .innerJoin(users, eq(users.id, campaignApprovals.approverUserId))
+    .where(and(eq(campaignApprovals.campaignId, campaign.id), eq(users.organisationId, organisation.id)))
+    .orderBy(desc(campaignApprovals.createdAt));
+  const [currentUser] = await db
+    .select({ role: users.role, active: users.active })
+    .from(users)
+    .where(and(eq(users.id, organisation.userId), eq(users.organisationId, organisation.id)))
+    .limit(1);
   const sent = targets.filter((target) => target.sentAt).length;
   const opened = targets.filter((target) => target.openedAt).length;
   const clicked = targets.filter((target) => target.clickedAt).length;
   const submitted = targets.filter((target) => target.submittedAt).length;
   const reported = targets.filter((target) => target.reportedAt).length;
+  const variantById = new Map(variants.map((variant) => [variant.id, variant]));
+  const variantSummaries = variants.map((variant) => {
+    const variantTargets = targets.filter((target) => target.campaignVariantId === variant.id);
+
+    return {
+      id: variant.id,
+      templateName: variant.templateName ?? "Template removed",
+      weight: variant.weight,
+      targetCount: variantTargets.length,
+      clicked: variantTargets.filter((target) => target.clickedAt).length,
+      reported: variantTargets.filter((target) => target.reportedAt).length,
+      trainingComplete: variantTargets.filter((target) => target.trainingCompletedAt).length,
+    };
+  });
+  const unassignedTargets = targets.filter(
+    (target) => !target.campaignVariantId || !variantById.has(target.campaignVariantId),
+  );
+  if (unassignedTargets.length > 0) {
+    variantSummaries.push({
+      id: "default",
+      templateName: campaign.templateName ?? "Default template",
+      weight: 0,
+      targetCount: unassignedTargets.length,
+      clicked: unassignedTargets.filter((target) => target.clickedAt).length,
+      reported: unassignedTargets.filter((target) => target.reportedAt).length,
+      trainingComplete: unassignedTargets.filter((target) => target.trainingCompletedAt).length,
+    });
+  }
   const credentialSubmissions = eventRows
     .filter((event) => event.eventType === "submitted")
     .map((event) => {
@@ -123,6 +217,25 @@ export default async function CampaignResultsPage({
     });
   const warning = trackingUrlWarning();
   const liveRefreshEnabled = !["completed", "cancelled"].includes(campaign.status);
+  const now = new Date();
+  const isDeepfakeCampaign =
+    campaign.templateCategory === "deepfake_exec" ||
+    campaign.landingPageType === "deepfake_disclosure" ||
+    deepfakeAssetRows.length > 0;
+  const approvedApproverIds = new Set(
+    approvalRows
+      .filter(
+        (approval) =>
+          approval.decision === "approved" &&
+          approval.approverActive &&
+          ["owner", "admin"].includes(approval.approverRole),
+      )
+      .map((approval) => approval.approverUserId),
+  );
+  const approvedAssetCount = deepfakeAssetRows.filter(
+    (asset) => asset.status === "approved" && asset.expiresAt.getTime() > now.getTime(),
+  ).length;
+  const canManageDeepfake = !!currentUser?.active && ["owner", "admin"].includes(currentUser.role);
 
   return (
     <div className="space-y-6">
@@ -154,6 +267,134 @@ export default async function CampaignResultsPage({
         </div>
       ) : null}
 
+      {isDeepfakeCampaign ? (
+        <Card>
+          <CardHeader>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <CardTitle>Deepfake executive controls</CardTitle>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={approvedAssetCount > 0 ? "secondary" : "outline"}>
+                  {approvedAssetCount > 0 ? "Asset approved" : "Asset pending"}
+                </Badge>
+                <Badge variant={approvedApproverIds.size >= 2 ? "secondary" : "outline"}>
+                  {approvedApproverIds.size}/2 approvals
+                </Badge>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            {deepfakeAssetRows.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                No deepfake asset has been registered for this campaign.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-left text-sm">
+                  <thead className="border-b text-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="py-3 font-medium">Executive</th>
+                      <th className="py-3 font-medium">Status</th>
+                      <th className="py-3 font-medium">Expires</th>
+                      <th className="py-3 font-medium">Watermark</th>
+                      <th className="py-3 font-medium">Asset</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deepfakeAssetRows.map((asset) => (
+                      <tr key={asset.id} className="border-b last:border-b-0">
+                        <td className="py-3 font-medium">{asset.executiveName}</td>
+                        <td className="py-3">{asset.status.replaceAll("_", " ")}</td>
+                        <td className="py-3">{asset.expiresAt.toLocaleString("en-AU")}</td>
+                        <td className="max-w-[260px] truncate py-3 font-mono text-xs">{asset.watermark}</td>
+                        <td className="py-3">
+                          <a className="font-medium text-primary underline-offset-4 hover:underline" href={asset.assetUrl} target="_blank" rel="noreferrer">
+                            Open asset
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {deepfakeAssetRows[0]?.provenance ? (
+              <details className="rounded-lg border border-border p-3">
+                <summary className="cursor-pointer text-sm font-medium">Latest provenance metadata</summary>
+                <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-[var(--collie-cloud)] p-3 font-mono text-xs">
+                  {JSON.stringify(deepfakeAssetRows[0].provenance, null, 2)}
+                </pre>
+              </details>
+            ) : null}
+
+            {approvalRows.length > 0 ? (
+              <div className="grid gap-2 text-sm sm:grid-cols-2">
+                {approvalRows.map((approval) => (
+                  <div key={approval.id} className="rounded-lg border border-border p-3">
+                    <div className="font-medium">
+                      {approval.approverName} <span className="text-muted-foreground">({approval.approverRole})</span>
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      {approval.decision} · {approval.createdAt.toLocaleString("en-AU")}
+                    </div>
+                    {approval.reason ? <div className="mt-2 text-muted-foreground">{approval.reason}</div> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {canManageDeepfake ? (
+              <div className="grid gap-4 lg:grid-cols-[minmax(320px,1fr)_minmax(280px,0.8fr)]">
+                <form action={registerDeepfakeAsset} className="grid gap-3 rounded-lg border border-border p-3">
+                  <input type="hidden" name="orgSlug" value={orgSlug} />
+                  <input type="hidden" name="campaignId" value={campaign.id} />
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="deepfakeExecutiveName">Executive name</Label>
+                      <Input id="deepfakeExecutiveName" name="executiveName" required minLength={2} maxLength={140} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="deepfakeAssetUrl">Asset URL</Label>
+                      <Input id="deepfakeAssetUrl" name="assetUrl" type="url" required />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="deepfakeSource">Source or consent reference</Label>
+                    <Textarea id="deepfakeSource" name="source" maxLength={500} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="deepfakeSha">Content SHA-256</Label>
+                    <Input id="deepfakeSha" name="contentSha256" pattern="[A-Fa-f0-9]{64}" />
+                  </div>
+                  <Button type="submit">Register asset</Button>
+                </form>
+
+                <div className="grid gap-3 rounded-lg border border-border p-3">
+                  <form action={recordDeepfakeCampaignApproval} className="grid gap-3">
+                    <input type="hidden" name="orgSlug" value={orgSlug} />
+                    <input type="hidden" name="campaignId" value={campaign.id} />
+                    <input type="hidden" name="decision" value="approved" />
+                    <Textarea name="reason" placeholder="Approval note" maxLength={500} />
+                    <Button type="submit" disabled={deepfakeAssetRows.length === 0}>
+                      Approve
+                    </Button>
+                  </form>
+                  <form action={recordDeepfakeCampaignApproval} className="grid gap-3">
+                    <input type="hidden" name="orgSlug" value={orgSlug} />
+                    <input type="hidden" name="campaignId" value={campaign.id} />
+                    <input type="hidden" name="decision" value="rejected" />
+                    <Textarea name="reason" placeholder="Rejection reason" maxLength={500} />
+                    <Button type="submit" variant="outline" disabled={deepfakeAssetRows.length === 0}>
+                      Reject
+                    </Button>
+                  </form>
+                </div>
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
+
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         {[
           ["Targets", String(targets.length)],
@@ -171,6 +412,47 @@ export default async function CampaignResultsPage({
           </Card>
         ))}
       </section>
+
+      {variantSummaries.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Template variants</CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <table className="w-full min-w-[680px] text-left text-sm">
+              <thead className="border-b text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="py-3 font-medium">Template</th>
+                  <th className="py-3 font-medium">Weight</th>
+                  <th className="py-3 font-medium">Targets</th>
+                  <th className="py-3 font-medium">Clicked</th>
+                  <th className="py-3 font-medium">Reported</th>
+                  <th className="py-3 font-medium">Training complete</th>
+                </tr>
+              </thead>
+              <tbody>
+                {variantSummaries.map((variant) => (
+                  <tr key={variant.id} className="border-b last:border-b-0">
+                    <td className="py-3 font-medium">{variant.templateName}</td>
+                    <td className="py-3">{variant.weight > 0 ? variant.weight : "Default"}</td>
+                    <td className="py-3">{variant.targetCount}</td>
+                    <td className="py-3">
+                      {variant.clicked} <span className="text-muted-foreground">({rate(variant.clicked, variant.targetCount)})</span>
+                    </td>
+                    <td className="py-3">
+                      {variant.reported} <span className="text-muted-foreground">({rate(variant.reported, variant.targetCount)})</span>
+                    </td>
+                    <td className="py-3">
+                      {variant.trainingComplete}{" "}
+                      <span className="text-muted-foreground">({rate(variant.trainingComplete, variant.targetCount)})</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {credentialSubmissions.length > 0 ? (
         <section className="rounded-lg border border-[rgb(242_106_33_/_0.36)] bg-card p-4 shadow-[0_1px_0_rgb(13_27_42_/_0.04)]">
@@ -263,6 +545,7 @@ export default async function CampaignResultsPage({
             <thead className="border-b text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="py-3 font-medium">Employee</th>
+                <th className="py-3 font-medium">Variant</th>
                 <th className="py-3 font-medium">Scheduled</th>
                 <th className="py-3 font-medium">Sent</th>
                 <th className="py-3 font-medium">Opened</th>
@@ -287,6 +570,11 @@ export default async function CampaignResultsPage({
                         {target.email}
                         {target.department ? ` · ${target.department}` : ""}
                       </div>
+                    </td>
+                    <td className="py-3">
+                      {target.campaignVariantId
+                        ? variantById.get(target.campaignVariantId)?.templateName ?? "Template removed"
+                        : campaign.templateName ?? "Default"}
                     </td>
                     <td className="py-3">{target.scheduledAt ? target.scheduledAt.toLocaleString("en-AU") : "Manual"}</td>
                     <td className="py-3">{target.sentAt ? "Yes" : "No"}</td>

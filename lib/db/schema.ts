@@ -26,12 +26,33 @@ export const templateCategory = pgEnum("template_category", [
   "tax",
   "telecom",
   "document_share",
+  "attachment_pdf",
+  "attachment_html",
+  "usb_drop",
+  "oauth_consent",
+  "mfa_push",
+  "sms_lure",
+  "vishing",
+  "deepfake_exec",
 ]);
 export const landingPageType = pgEnum("landing_page_type", [
   "credential_harvest",
   "attachment_warning",
   "training_redirect",
   "friendly_simulation",
+  "mfa_push_simulator",
+  "oauth_consent",
+  "usb_drop",
+  "voice_callback",
+  "deepfake_disclosure",
+]);
+export const deliveryChannel = pgEnum("delivery_channel", [
+  "email",
+  "sms",
+  "voice",
+  "qr",
+  "attachment",
+  "usb",
 ]);
 export const campaignStatus = pgEnum("campaign_status", [
   "draft",
@@ -67,6 +88,17 @@ export const assignmentSource = pgEnum("assignment_source", [
   "manual",
 ]);
 export const sendingTransport = pgEnum("sending_transport", ["resend", "smtp"]);
+export const deepfakeAssetStatus = pgEnum("deepfake_asset_status", [
+  "draft",
+  "pending_approval",
+  "approved",
+  "rejected",
+  "expired",
+]);
+export const campaignApprovalDecision = pgEnum("campaign_approval_decision", [
+  "approved",
+  "rejected",
+]);
 export const ssoKind = pgEnum("sso_kind", ["oidc", "saml"]);
 export const exclusionRuleKind = pgEnum("exclusion_rule_kind", [
   "group",
@@ -100,6 +132,15 @@ export const organisations = pgTable(
     smtpPasswordEncrypted: text("smtp_password_encrypted"),
     smtpSecure: boolean("smtp_secure").default(true).notNull(),
     smtpFromAddress: text("smtp_from_address"),
+    twilioAccountSidEncrypted: text("twilio_account_sid_encrypted"),
+    twilioAuthTokenEncrypted: text("twilio_auth_token_encrypted"),
+    twilioMessagingServiceSidEncrypted: text("twilio_messaging_service_sid_encrypted"),
+    twilioSenderPhonePool: text("twilio_sender_phone_pool").array().default(sql`ARRAY[]::text[]`).notNull(),
+    twilioOptOutKeywords: text("twilio_opt_out_keywords").array().default(sql`ARRAY['STOP']::text[]`).notNull(),
+    twilioVoiceFromNumberEncrypted: text("twilio_voice_from_number_encrypted"),
+    voiceProvider: text("voice_provider").default("twilio").notNull(),
+    ttsProvider: text("tts_provider").default("azure").notNull(),
+    voiceConsentRegions: text("voice_consent_regions").array().default(sql`ARRAY[]::text[]`).notNull(),
     scimTokenEncrypted: text("scim_token_encrypted"),
     scimTokenHash: text("scim_token_hash"),
     scimTokenIssuedAt: timestamp("scim_token_issued_at", { withTimezone: true }),
@@ -253,6 +294,7 @@ export const employees = pgTable(
       .notNull()
       .references(() => organisations.id, { onDelete: "cascade" }),
     email: text("email").notNull(),
+    phoneNumber: text("phone_number"),
     firstName: text("first_name").notNull(),
     lastName: text("last_name").notNull(),
     department: text("department"),
@@ -331,6 +373,7 @@ export const emailTemplates = pgTable(
     organisationId: text("organisation_id").references(() => organisations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     category: templateCategory("category").notNull(),
+    deliveryChannel: deliveryChannel("delivery_channel").default("email").notNull(),
     difficulty: integer("difficulty").notNull(),
     subject: text("subject").notNull(),
     fromName: text("from_name").notNull(),
@@ -374,6 +417,8 @@ export const campaigns = pgTable(
     status: campaignStatus("status").default("draft").notNull(),
     emailTemplateId: text("email_template_id").references(() => emailTemplates.id, { onDelete: "set null" }),
     landingPageId: text("landing_page_id").references(() => landingPages.id, { onDelete: "set null" }),
+    deliveryChannel: deliveryChannel("delivery_channel").default("email").notNull(),
+    scenario: text("scenario"),
     targetGroupIds: text("target_group_ids").array().default(sql`ARRAY[]::text[]`).notNull(),
     sendStrategy: sendStrategy("send_strategy").default("immediate").notNull(),
     startAt: timestamp("start_at", { withTimezone: true }),
@@ -392,6 +437,25 @@ export const campaigns = pgTable(
     ...timestamps,
   },
   (table) => [index("campaigns_org_idx").on(table.organisationId)],
+);
+
+export const campaignVariants = pgTable(
+  "campaign_variants",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    campaignId: text("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "cascade" }),
+    templateId: text("template_id")
+      .notNull()
+      .references(() => emailTemplates.id, { onDelete: "cascade" }),
+    weight: integer("weight").default(50).notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index("campaign_variants_campaign_idx").on(table.campaignId),
+    uniqueIndex("campaign_variants_campaign_template_idx").on(table.campaignId, table.templateId),
+  ],
 );
 
 export type ExclusionRuleParameters =
@@ -426,6 +490,8 @@ export const campaignTargets = pgTable(
     employeeId: text("employee_id")
       .notNull()
       .references(() => employees.id, { onDelete: "cascade" }),
+    campaignVariantId: text("campaign_variant_id").references(() => campaignVariants.id, { onDelete: "set null" }),
+    deliveryChannel: deliveryChannel("delivery_channel").default("email").notNull(),
     uniqueToken: text("unique_token").notNull(),
     scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
     sentAt: timestamp("sent_at", { withTimezone: true }),
@@ -439,6 +505,88 @@ export const campaignTargets = pgTable(
   (table) => [
     uniqueIndex("campaign_targets_token_idx").on(table.uniqueToken),
     uniqueIndex("campaign_targets_campaign_employee_idx").on(table.campaignId, table.employeeId),
+    index("campaign_targets_variant_idx").on(table.campaignVariantId),
+  ],
+);
+
+export const campaignApprovals = pgTable(
+  "campaign_approvals",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    campaignId: text("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "cascade" }),
+    approverUserId: text("approver_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    decision: campaignApprovalDecision("decision").notNull(),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("campaign_approvals_campaign_idx").on(table.campaignId),
+    uniqueIndex("campaign_approvals_campaign_approver_idx").on(table.campaignId, table.approverUserId),
+  ],
+);
+
+export const deepfakeAssets = pgTable(
+  "deepfake_assets",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    campaignId: text("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "cascade" }),
+    executiveName: text("executive_name").notNull(),
+    assetUrl: text("asset_url").notNull(),
+    watermark: text("watermark").notNull(),
+    provenance: jsonb("provenance").$type<Record<string, unknown>>().default({}).notNull(),
+    status: deepfakeAssetStatus("status").default("draft").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index("deepfake_assets_campaign_idx").on(table.campaignId),
+    index("deepfake_assets_expires_idx").on(table.expiresAt),
+  ],
+);
+
+export const voiceCallAttempts = pgTable(
+  "voice_call_attempts",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    campaignTargetId: text("campaign_target_id")
+      .notNull()
+      .references(() => campaignTargets.id, { onDelete: "cascade" }),
+    providerCallSid: text("provider_call_sid"),
+    consentCaptured: boolean("consent_captured").default(false).notNull(),
+    recordingUrl: text("recording_url"),
+    redactedTranscript: text("redacted_transcript"),
+    dtmfDigits: text("dtmf_digits"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("voice_call_attempts_target_idx").on(table.campaignTargetId),
+    uniqueIndex("voice_call_attempts_provider_sid_idx")
+      .on(table.providerCallSid)
+      .where(sql`${table.providerCallSid} is not null`),
+  ],
+);
+
+export const smsOptOuts = pgTable(
+  "sms_opt_outs",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    phoneNumber: text("phone_number").notNull(),
+    keyword: text("keyword").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("sms_opt_outs_org_idx").on(table.organisationId),
+    uniqueIndex("sms_opt_outs_org_phone_idx").on(table.organisationId, table.phoneNumber),
   ],
 );
 
@@ -615,6 +763,7 @@ export const organisationsRelations = relations(organisations, ({ many }) => ({
   exclusionRules: many(exclusionRules),
   employeeSyncRuns: many(employeeSyncRuns),
   realMailReports: many(realMailReports),
+  smsOptOuts: many(smsOptOuts),
 }));
 
 export const exclusionRulesRelations = relations(exclusionRules, ({ one }) => ({
@@ -669,4 +818,52 @@ export const employeesRelations = relations(employees, ({ one, many }) => ({
   campaignTargets: many(campaignTargets),
   trainingAssignments: many(trainingAssignments),
   realMailReports: many(realMailReports),
+}));
+
+export const campaignsRelations = relations(campaigns, ({ one, many }) => ({
+  organisation: one(organisations, {
+    fields: [campaigns.organisationId],
+    references: [organisations.id],
+  }),
+  template: one(emailTemplates, {
+    fields: [campaigns.emailTemplateId],
+    references: [emailTemplates.id],
+  }),
+  landingPage: one(landingPages, {
+    fields: [campaigns.landingPageId],
+    references: [landingPages.id],
+  }),
+  variants: many(campaignVariants),
+  targets: many(campaignTargets),
+  approvals: many(campaignApprovals),
+  deepfakeAssets: many(deepfakeAssets),
+}));
+
+export const campaignVariantsRelations = relations(campaignVariants, ({ one, many }) => ({
+  campaign: one(campaigns, {
+    fields: [campaignVariants.campaignId],
+    references: [campaigns.id],
+  }),
+  template: one(emailTemplates, {
+    fields: [campaignVariants.templateId],
+    references: [emailTemplates.id],
+  }),
+  targets: many(campaignTargets),
+}));
+
+export const campaignTargetsRelations = relations(campaignTargets, ({ one, many }) => ({
+  campaign: one(campaigns, {
+    fields: [campaignTargets.campaignId],
+    references: [campaigns.id],
+  }),
+  employee: one(employees, {
+    fields: [campaignTargets.employeeId],
+    references: [employees.id],
+  }),
+  variant: one(campaignVariants, {
+    fields: [campaignTargets.campaignVariantId],
+    references: [campaignVariants.id],
+  }),
+  events: many(events),
+  voiceCallAttempts: many(voiceCallAttempts),
 }));

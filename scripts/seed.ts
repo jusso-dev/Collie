@@ -5,6 +5,7 @@ import { emailTemplates, landingPages, templateCategory, trainingModules } from 
 import { emailLogoMarkup } from "@/lib/email/brand-assets";
 
 const phishingBasicsId = "training-phishing-basics";
+const oauthConsentTrainingId = "training-oauth-consent";
 
 type TemplateCategory = (typeof templateCategory.enumValues)[number];
 
@@ -68,6 +69,12 @@ function brandedEmail(template: DemoTemplate) {
                       `<p style="margin:18px 0 0;color:#334155;font-size:15px;line-height:1.65;">${paragraph}</p>`,
                   )
                   .join("")}
+                ${
+                  template.category === "qr_code"
+                    ? `<div style="margin:24px 0 0;padding:16px;border:1px solid #d7dee8;border-radius:8px;background:#f8fafc;display:inline-block;">{{qrCode}}</div>
+                <p style="margin:14px 0 0;color:#64748b;font-size:12px;line-height:1.55;">Scan this code with your mobile device or use the button below.</p>`
+                    : ""
+                }
                 <table role="presentation" cellspacing="0" cellpadding="0" style="margin-top:26px;">
                   <tr>
                     <td style="background:${accent};border-radius:6px;">
@@ -101,6 +108,7 @@ function textEmail(template: DemoTemplate) {
     "",
     ...template.body,
     "",
+    ...(template.category === "qr_code" ? [`QR code link: {{qrUrl}}`, ""] : []),
     `${template.cta}: {{trackingUrl}}`,
     "",
     template.footer,
@@ -258,6 +266,25 @@ const templates: DemoTemplate[] = [
     cta: "Download scan",
     footer: "Shared printer services",
   },
+  {
+    name: "Microsoft 365 app permission review",
+    category: "oauth_consent",
+    difficulty: 4,
+    subject: "Action requested: app permissions for shared documents",
+    fromName: "Microsoft 365",
+    fromEmailPattern: "no-reply@microsoft365.example",
+    brand: "Microsoft 365",
+    brandColour: "#2563eb",
+    accentColour: "#0078d4",
+    preheader: "A document app is requesting access.",
+    heading: "Review app permissions",
+    body: [
+      "A document access app has requested permission to connect with your work account.",
+      "Review the requested permissions to continue accessing recently shared files.",
+    ],
+    cta: "Review permissions",
+    footer: "Microsoft 365 app consent notifications",
+  },
 ];
 
 async function main() {
@@ -298,6 +325,42 @@ async function main() {
     });
 
   await db
+    .insert(trainingModules)
+    .values({
+      id: oauthConsentTrainingId,
+      organisationId: null,
+      title: "Spotting consent-grant phishing",
+      description: "How to review OAuth app permission prompts before granting account access.",
+      durationSeconds: 180,
+      contentType: "interactive",
+      topic: "oauth_consent",
+      language: "en-AU",
+      contentHtml:
+        "<p>OAuth consent prompts can grant access to profile, mail, and files without asking for a password. Check the app name, publisher, permission scope, and whether you expected the request before accepting.</p>",
+      quiz: [
+        {
+          question: "What should you check before accepting an OAuth consent prompt?",
+          options: ["The app, publisher, and requested permissions", "Only the button colour", "Whether it appeared quickly"],
+          answer: 0,
+        },
+      ],
+    })
+    .onConflictDoUpdate({
+      target: trainingModules.id,
+      set: {
+        title: sql`excluded.title`,
+        description: sql`excluded.description`,
+        durationSeconds: sql`excluded.duration_seconds`,
+        contentType: sql`excluded.content_type`,
+        topic: sql`excluded.topic`,
+        language: sql`excluded.language`,
+        contentHtml: sql`excluded.content_html`,
+        quiz: sql`excluded.quiz`,
+        updatedAt: new Date(),
+      },
+    });
+
+  await db
     .insert(emailTemplates)
     .values(
       templates.map((template, index) => ({
@@ -313,7 +376,7 @@ async function main() {
         textBody: textEmail(template),
         language: "en-AU",
         region: "global",
-        linkedTrainingModuleId: phishingBasicsId,
+        linkedTrainingModuleId: template.category === "oauth_consent" ? oauthConsentTrainingId : phishingBasicsId,
       })),
     )
     .onConflictDoUpdate({
@@ -438,6 +501,20 @@ async function main() {
     </main>
   </body>
 </html>`;
+  const oauthConsentLandingHtml = `<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OAuth consent simulation</title>
+  </head>
+  <body>
+    <main>
+      <h1>OAuth consent simulation</h1>
+      <p>This system page is rendered by Collie's OAuth consent simulator.</p>
+    </main>
+  </body>
+</html>`;
 
   await db
     .insert(landingPages)
@@ -466,6 +543,14 @@ async function main() {
         html: attachmentLandingHtml,
         linkedTrainingModuleId: phishingBasicsId,
       },
+      {
+        id: "system-landing-oauth-consent",
+        organisationId: null,
+        name: "OAuth consent prompt",
+        type: "oauth_consent",
+        html: oauthConsentLandingHtml,
+        linkedTrainingModuleId: oauthConsentTrainingId,
+      },
     ])
     .onConflictDoUpdate({
       target: landingPages.id,
@@ -478,7 +563,7 @@ async function main() {
       },
     });
 
-  console.info(`Seeded ${templates.length} fictional Collie demo templates and 3 landing pages.`);
+  console.info(`Seeded ${templates.length} fictional Collie demo templates and 4 landing pages.`);
 }
 
 main()

@@ -39,6 +39,11 @@ export async function requireOrganisationForSlug(orgSlug: string) {
       smtpPasswordEncrypted: organisations.smtpPasswordEncrypted,
       smtpSecure: organisations.smtpSecure,
       smtpFromAddress: organisations.smtpFromAddress,
+      twilioAccountSidEncrypted: organisations.twilioAccountSidEncrypted,
+      twilioAuthTokenEncrypted: organisations.twilioAuthTokenEncrypted,
+      twilioMessagingServiceSidEncrypted: organisations.twilioMessagingServiceSidEncrypted,
+      twilioSenderPhonePool: organisations.twilioSenderPhonePool,
+      twilioOptOutKeywords: organisations.twilioOptOutKeywords,
       userActive: users.active,
     })
     .from(organisations)
@@ -67,6 +72,11 @@ export async function requireOrganisationForSlug(orgSlug: string) {
     smtpPasswordEncrypted: organisation.smtpPasswordEncrypted,
     smtpSecure: organisation.smtpSecure,
     smtpFromAddress: organisation.smtpFromAddress,
+    twilioAccountSidEncrypted: organisation.twilioAccountSidEncrypted,
+    twilioAuthTokenEncrypted: organisation.twilioAuthTokenEncrypted,
+    twilioMessagingServiceSidEncrypted: organisation.twilioMessagingServiceSidEncrypted,
+    twilioSenderPhonePool: organisation.twilioSenderPhonePool,
+    twilioOptOutKeywords: organisation.twilioOptOutKeywords,
     userId: session.user.id,
   };
 }
