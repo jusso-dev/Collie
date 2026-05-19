@@ -13,10 +13,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ScimTokenCard } from "@/components/settings/scim-token-card";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { openTotpSecret } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
-import { organisationInvitations, users, verifications } from "@/lib/db/schema";
+import { organisationInvitations, organisations, users, verifications } from "@/lib/db/schema";
 import { buildCampaignReportAddress, buildOrganisationReportAddress } from "@/lib/email/reporting";
 import { and, desc, eq, sql } from "drizzle-orm";
 
@@ -67,6 +68,14 @@ export default async function SettingsPage({
     .from(organisationInvitations)
     .where(and(eq(organisationInvitations.organisationId, organisation.id), eq(organisationInvitations.status, "pending")))
     .orderBy(desc(organisationInvitations.createdAt));
+  const [scimState] = await db
+    .select({
+      scimTokenHash: organisations.scimTokenHash,
+      scimTokenIssuedAt: organisations.scimTokenIssuedAt,
+    })
+    .from(organisations)
+    .where(eq(organisations.id, organisation.id))
+    .limit(1);
   const resetLinks = await db
     .select({
       identifier: verifications.identifier,
@@ -278,6 +287,12 @@ export default async function SettingsPage({
         smtpSecure={organisation.smtpSecure}
         smtpFromAddress={organisation.smtpFromAddress}
         testRecipientDefault={null}
+      />
+      <ScimTokenCard
+        orgSlug={orgSlug}
+        endpointUrl={`${appUrl}/api/scim/v2`}
+        hasToken={Boolean(scimState?.scimTokenHash)}
+        issuedAt={scimState?.scimTokenIssuedAt ?? null}
       />
 
       <div className="rounded-lg border border-border bg-card p-5">
