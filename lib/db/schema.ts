@@ -122,6 +122,11 @@ export const users = pgTable(
     mfaEnabled: boolean("mfa_enabled").default(false).notNull(),
     mfaResetAt: timestamp("mfa_reset_at", { withTimezone: true }),
     totpSecretEncrypted: text("totp_secret_encrypted"),
+    // Mirror of BetterAuth twoFactor plugin's required user field. We keep our
+    // own mfaEnabled flag (used by the org-level enforcement gate) and let the
+    // plugin manage twoFactorEnabled, which is its trigger for the sign-in
+    // challenge. The two are kept in lockstep by app/actions/mfa.ts.
+    twoFactorEnabled: boolean("two_factor_enabled").default(false).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -205,6 +210,28 @@ export const verifications = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index("verifications_identifier_idx").on(table.identifier)],
+);
+
+// Storage for BetterAuth's twoFactor plugin. Field shape matches the plugin's
+// declared model exactly (see node_modules/better-auth/dist/plugins/two-factor/schema.d.mts).
+// The secret column holds the user's TOTP seed encrypted with the BetterAuth
+// envelope (symmetricEncrypt + BETTER_AUTH_SECRET); backupCodes is a JSON
+// blob of one-time codes encrypted the same way.
+export const twoFactors = pgTable(
+  "two_factors",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    secret: text("secret").notNull(),
+    backupCodes: text("backup_codes").notNull(),
+    verified: boolean("verified").default(true).notNull(),
+  },
+  (table) => [
+    index("two_factors_user_id_idx").on(table.userId),
+    index("two_factors_secret_idx").on(table.secret),
+  ],
 );
 
 export const employees = pgTable(

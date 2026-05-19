@@ -1,14 +1,16 @@
 "use server";
 
+import { symmetricEncrypt } from "better-auth/crypto";
 import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+import { auth } from "@/lib/auth/auth";
 import { requireSession } from "@/lib/auth/session";
 import { buildOtpauthUrl, generateTotpSecret, openTotpSecret, sealTotpSecret, verifyTotpCode } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
-import { users } from "@/lib/db/schema";
+import { twoFactors, users } from "@/lib/db/schema";
 
 const verifySchema = z.object({
   code: z.string().regex(/^\s*\d{3}\s*\d{3}\s*$|^\d{6}$/, "Enter the 6-digit code from your authenticator."),
@@ -57,10 +59,36 @@ export async function confirmMfaSetup(formData: FormData): Promise<void> {
     throw new Error("That code did not match. Try the next one your authenticator shows.");
   }
 
-  await db
-    .update(users)
-    .set({ mfaEnabled: true, mfaResetAt: null, updatedAt: new Date() })
-    .where(eq(users.id, user.id));
+  // Re-encrypt the verified secret with BetterAuth's envelope so the
+  // twoFactor plugin can verify codes on subsequent sign-ins. This is the
+  // single place a new enrolment becomes plugin-native; legacy users who
+  // enrolled before this change are migrated lazily by the after-sign-in
+  // hook in `lib/auth/auth.ts`.
+  const ctx = await auth.$context;
+  const encryptedSecret = await symmetricEncrypt({
+    key: ctx.secretConfig,
+    data: secret,
+  });
+
+  await db.transaction(async (tx) => {
+    await tx.delete(twoFactors).where(eq(twoFactors.userId, user.id));
+    await tx.insert(twoFactors).values({
+      userId: user.id,
+      secret: encryptedSecret,
+      backupCodes: "",
+      verified: true,
+    });
+    await tx
+      .update(users)
+      .set({
+        mfaEnabled: true,
+        twoFactorEnabled: true,
+        totpSecretEncrypted: null,
+        mfaResetAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, user.id));
+  });
 
   if (user.organisationId) {
     revalidatePath("/");
@@ -70,9 +98,18 @@ export async function confirmMfaSetup(formData: FormData): Promise<void> {
 
 export async function disableMfaForSelf(): Promise<void> {
   const session = await requireSession();
-  await db
-    .update(users)
-    .set({ mfaEnabled: false, totpSecretEncrypted: null, mfaResetAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(users.id, session.user.id), eq(users.mfaRequired, false)));
+  await db.transaction(async (tx) => {
+    await tx
+      .update(users)
+      .set({
+        mfaEnabled: false,
+        twoFactorEnabled: false,
+        totpSecretEncrypted: null,
+        mfaResetAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(users.id, session.user.id), eq(users.mfaRequired, false)));
+    await tx.delete(twoFactors).where(eq(twoFactors.userId, session.user.id));
+  });
   redirect("/?mfa=disabled");
 }

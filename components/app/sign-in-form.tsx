@@ -92,6 +92,13 @@ export function SignInForm() {
       return;
     }
 
+    // BetterAuth's twoFactor plugin replies with `twoFactorRedirect: true`
+    // when the user must complete a second factor before the session is
+    // issued. The twoFactorClient plugin already navigates to the challenge
+    // page via its onTwoFactorRedirect handler — bail out so we don't race it.
+    const data = result.data as { twoFactorRedirect?: boolean } | null;
+    if (data?.twoFactorRedirect) return;
+
     router.push(callbackURL);
     router.refresh();
   }

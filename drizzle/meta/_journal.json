@@ -57,6 +57,13 @@
       "when": 1779169884106,
       "tag": "0007_curly_professor_monster",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1779170001035,
+      "tag": "0008_aspiring_kabuki",
+      "breakpoints": true
     }
   ]
 }
