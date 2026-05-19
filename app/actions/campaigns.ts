@@ -20,7 +20,7 @@ import {
   scheduledTargetTime,
   type WorkingWindow,
 } from "@/lib/campaigns/schedule";
-import { sendCampaignNow } from "@/lib/campaigns/send-campaign";
+import { enqueueCampaignDispatch, sendCampaignNow } from "@/lib/campaigns/send-campaign";
 import { db } from "@/lib/db/client";
 import {
   campaignTargets,
@@ -347,16 +347,29 @@ export async function createCampaign(formData: FormData) {
 const launchCampaignSchema = z.object({
   orgSlug: z.string().min(1),
   campaignId: z.string().min(1),
+  mode: z.enum(["async", "sync"]).default("async"),
 });
 
 export async function launchCampaign(formData: FormData) {
   const data = launchCampaignSchema.parse({
     orgSlug: valueFromForm(formData, "orgSlug"),
     campaignId: valueFromForm(formData, "campaignId"),
+    mode: valueFromForm(formData, "mode") || undefined,
   });
   const organisation = await requireOrganisationForSlug(data.orgSlug);
 
-  const result = await sendCampaignNow({ organisation, campaignId: data.campaignId });
+  // Sync mode is dev-only — useful when there's no Inngest dev server running.
+  // Defaults to the new async dispatcher which hands off to Inngest.
+  if (data.mode === "sync") {
+    const result = await sendCampaignNow({ organisation, campaignId: data.campaignId });
+    revalidatePath(`/${data.orgSlug}/campaigns`);
+    revalidatePath(`/${data.orgSlug}/campaigns/${data.campaignId}`);
+    revalidatePath(`/${data.orgSlug}/reports`);
+    revalidatePath(`/${data.orgSlug}/dashboard`);
+    redirect(`/${data.orgSlug}/campaigns?sent=${result.sentCount}`);
+  }
+
+  const result = await enqueueCampaignDispatch({ organisation, campaignId: data.campaignId });
 
   await recordAudit({
     organisationId: organisation.id,
@@ -364,14 +377,14 @@ export async function launchCampaign(formData: FormData) {
     action: "campaign.launch",
     resourceType: "campaign",
     resourceId: data.campaignId,
-    metadata: { sentCount: result.sentCount },
+    metadata: { targetCount: result.targetCount },
   });
 
   revalidatePath(`/${data.orgSlug}/campaigns`);
   revalidatePath(`/${data.orgSlug}/campaigns/${data.campaignId}`);
   revalidatePath(`/${data.orgSlug}/reports`);
   revalidatePath(`/${data.orgSlug}/dashboard`);
-  redirect(`/${data.orgSlug}/campaigns?sent=${result.sentCount}`);
+  redirect(`/${data.orgSlug}/campaigns?enqueued=${result.targetCount}`);
 }
 
 const campaignStateSchema = z.object({

@@ -378,11 +378,13 @@ export default async function CampaignsPage({
                         <form action={launchCampaign}>
                           <input type="hidden" name="orgSlug" value={orgSlug} />
                           <input type="hidden" name="campaignId" value={campaign.id} />
+                          <input type="hidden" name="mode" value="async" />
                           <Button
                             type="submit"
                             disabled={!sendingConfigured || !["draft", "scheduled", "paused"].includes(campaign.status)}
+                            title="Hands the launch to Inngest. Retries, idempotency, and working-hours clamping all apply."
                           >
-                            Send now
+                            Launch (queued)
                           </Button>
                         </form>
                         <form action={updateCampaignStatus}>
