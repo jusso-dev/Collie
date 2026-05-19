@@ -55,6 +55,14 @@ export default async function DashboardPage({
     employeeList.length === 0
       ? null
       : Math.round(employeeList.reduce((total, employee) => total + employee.riskScore, 0) / employeeList.length);
+  const transportConfigured =
+    organisation.sendingTransport === "smtp"
+      ? Boolean(organisation.smtpHost && organisation.smtpPort && organisation.smtpFromAddress)
+      : Boolean(organisation.resendApiKeyEncrypted);
+  const fromAddressConfigured =
+    organisation.sendingTransport === "smtp"
+      ? Boolean(organisation.smtpFromAddress || organisation.senderFromAddress)
+      : Boolean(organisation.senderFromAddress);
 
   return (
     <div className="space-y-6">
@@ -171,15 +179,17 @@ export default async function DashboardPage({
                 <span>Create a campaign</span>
               </div>
               <div className="flex items-center gap-2 text-muted-foreground">
-                {organisation.resendApiKeyEncrypted ? (
+                {transportConfigured ? (
                   <CheckCircle2 className="size-4 text-[var(--collie-blue)]" aria-hidden="true" />
                 ) : (
                   <Clock className="size-4" aria-hidden="true" />
                 )}
-                <span>Add Resend API key</span>
+                <span>
+                  {organisation.sendingTransport === "smtp" ? "Configure SMTP relay" : "Add Resend API key"}
+                </span>
               </div>
               <div className="flex items-center gap-2 text-muted-foreground">
-                {organisation.senderFromAddress ? (
+                {fromAddressConfigured ? (
                   <CheckCircle2 className="size-4 text-[var(--collie-blue)]" aria-hidden="true" />
                 ) : (
                   <Clock className="size-4" aria-hidden="true" />

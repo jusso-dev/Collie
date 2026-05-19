@@ -8,13 +8,15 @@ import {
 } from "@/lib/campaigns/schedule";
 import { db } from "@/lib/db/client";
 import { campaignTargets, campaigns, emailTemplates, employees, events, organisations } from "@/lib/db/schema";
-import { sendCampaignEmail } from "@/lib/email/campaign-sender";
+import {
+  getTransportForOrganisation,
+  TransientSendError,
+  type CampaignTransport,
+  type OrganisationTransportConfig,
+} from "@/lib/email/campaign-sender";
 
-type OrganisationSendConfig = {
+type OrganisationSendConfig = OrganisationTransportConfig & {
   id: string;
-  name: string;
-  senderFromAddress: string | null;
-  resendApiKeyEncrypted: string | null;
 };
 
 type LoadedCampaign = {
@@ -77,13 +79,21 @@ function effectiveTimezone(campaign: LoadedCampaign, target: TargetRow): string 
   return target.employeeTimezone ?? "Australia/Sydney";
 }
 
+function senderAddressFor(org: OrganisationSendConfig): string | null {
+  if (org.sendingTransport === "smtp") {
+    return org.smtpFromAddress?.trim() || org.senderFromAddress?.trim() || null;
+  }
+  return org.senderFromAddress?.trim() || null;
+}
+
 async function sendTarget(input: {
   organisation: OrganisationSendConfig;
+  transport: CampaignTransport;
   campaign: LoadedCampaign;
   target: TargetRow;
   now?: Date;
 }): Promise<"sent" | "deferred" | "skipped"> {
-  const { campaign, organisation, target } = input;
+  const { campaign, organisation, transport, target } = input;
   const now = input.now ?? new Date();
 
   if (!campaign.templateId || !campaign.templateSubject || !campaign.templateHtml || !campaign.templateText) {
@@ -111,31 +121,46 @@ async function sendTarget(input: {
     return "deferred";
   }
 
-  const result = await sendCampaignEmail({
-    apiKey: organisation.resendApiKeyEncrypted!,
-    from: organisation.senderFromAddress!,
-    organisationName: organisation.name,
-    template: {
-      subject: campaign.templateSubject,
-      htmlBody: campaign.templateHtml,
-      textBody: campaign.templateText,
-    },
-    employee: {
-      email: target.employeeEmail,
-      firstName: target.firstName,
-      lastName: target.lastName,
-      department: target.department,
-    },
-    token: target.token,
-  });
+  let result;
+  try {
+    result = await transport.send({
+      organisationName: organisation.name,
+      template: {
+        subject: campaign.templateSubject,
+        htmlBody: campaign.templateHtml,
+        textBody: campaign.templateText,
+      },
+      employee: {
+        email: target.employeeEmail,
+        firstName: target.firstName,
+        lastName: target.lastName,
+        department: target.department,
+      },
+      token: target.token,
+    });
+  } catch (error) {
+    if (error instanceof TransientSendError) {
+      // Defer this target. The cron / Inngest retry loop will pick it up
+      // again; we deliberately do NOT set sentAt so it stays queued.
+      const retryAfterMs = error.retryAfterMs ?? 60_000;
+      const nextAttempt = new Date(now.getTime() + retryAfterMs);
+      await db
+        .update(campaignTargets)
+        .set({ scheduledAt: nextAttempt, updatedAt: now })
+        .where(eq(campaignTargets.id, target.id));
+      return "deferred";
+    }
+    throw error;
+  }
 
   await db.update(campaignTargets).set({ sentAt: now, updatedAt: now }).where(eq(campaignTargets.id, target.id));
   await db.insert(events).values({
     campaignTargetId: target.id,
     eventType: "sent",
     metadata: {
+      transport: result.transport,
       messageId: result.messageId,
-      from: organisation.senderFromAddress,
+      from: senderAddressFor(organisation),
       recipient: target.employeeEmail,
       clickUrl: result.clickUrl,
       pixelUrl: result.pixelUrl,
@@ -167,10 +192,7 @@ async function loadTargets(campaignId: string, organisationId: string): Promise<
 
 export async function sendCampaignNow(input: { organisation: OrganisationSendConfig; campaignId: string }) {
   const { organisation } = input;
-
-  if (!organisation.resendApiKeyEncrypted || !organisation.senderFromAddress) {
-    throw new Error("Add a Resend API key and sender From address in Settings before sending.");
-  }
+  const transport = getTransportForOrganisation(organisation);
 
   const [campaign] = await loadSendableCampaign(organisation.id, input.campaignId);
 
@@ -196,7 +218,7 @@ export async function sendCampaignNow(input: { organisation: OrganisationSendCon
   let deferredCount = 0;
 
   for (const target of unsentTargets) {
-    const outcome = await sendTarget({ organisation, campaign, target, now });
+    const outcome = await sendTarget({ organisation, transport, campaign, target, now });
     if (outcome === "sent") sentCount += 1;
     if (outcome === "deferred") deferredCount += 1;
   }
@@ -210,10 +232,7 @@ export async function sendCampaignTargetNow(input: {
   targetId: string;
 }) {
   const { organisation } = input;
-
-  if (!organisation.resendApiKeyEncrypted || !organisation.senderFromAddress) {
-    throw new Error("Add a Resend API key and sender From address in Settings before sending.");
-  }
+  const transport = getTransportForOrganisation(organisation);
 
   const [campaign] = await loadSendableCampaign(organisation.id, input.campaignId);
 
@@ -253,45 +272,45 @@ export async function sendCampaignTargetNow(input: {
   }
 
   await db.update(campaigns).set({ status: "running", updatedAt: new Date() }).where(eq(campaigns.id, campaign.id));
-  const outcome = await sendTarget({ organisation, campaign, target });
+  const outcome = await sendTarget({ organisation, transport, campaign, target });
 
   return { campaignId: campaign.id, sentCount: outcome === "sent" ? 1 : 0, deferred: outcome === "deferred" };
 }
 
-export async function sendCampaignById(input: { organisationId: string; campaignId: string }) {
+async function loadOrganisationSendConfig(organisationId: string): Promise<OrganisationSendConfig | null> {
   const [organisation] = await db
     .select({
       id: organisations.id,
       name: organisations.name,
       senderFromAddress: organisations.senderFromAddress,
       resendApiKeyEncrypted: organisations.resendApiKeyEncrypted,
+      sendingTransport: organisations.sendingTransport,
+      smtpHost: organisations.smtpHost,
+      smtpPort: organisations.smtpPort,
+      smtpUsernameEncrypted: organisations.smtpUsernameEncrypted,
+      smtpPasswordEncrypted: organisations.smtpPasswordEncrypted,
+      smtpSecure: organisations.smtpSecure,
+      smtpFromAddress: organisations.smtpFromAddress,
     })
     .from(organisations)
-    .where(eq(organisations.id, input.organisationId))
+    .where(eq(organisations.id, organisationId))
     .limit(1);
 
+  return organisation ?? null;
+}
+
+export async function sendCampaignById(input: { organisationId: string; campaignId: string }) {
+  const organisation = await loadOrganisationSendConfig(input.organisationId);
   if (!organisation) {
     throw new Error("Organisation is not available.");
   }
-
   return sendCampaignNow({ organisation, campaignId: input.campaignId });
 }
 
 export async function sendCampaignTargetById(input: { organisationId: string; campaignId: string; targetId: string }) {
-  const [organisation] = await db
-    .select({
-      id: organisations.id,
-      name: organisations.name,
-      senderFromAddress: organisations.senderFromAddress,
-      resendApiKeyEncrypted: organisations.resendApiKeyEncrypted,
-    })
-    .from(organisations)
-    .where(eq(organisations.id, input.organisationId))
-    .limit(1);
-
+  const organisation = await loadOrganisationSendConfig(input.organisationId);
   if (!organisation) {
     throw new Error("Organisation is not available.");
   }
-
   return sendCampaignTargetNow({ organisation, campaignId: input.campaignId, targetId: input.targetId });
 }
