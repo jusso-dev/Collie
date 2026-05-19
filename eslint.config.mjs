@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "test-results/**",
     "playwright-report/**",
     "next-env.d.ts",
+    // Sibling agent worktrees and Claude scratch dirs are not part of the
+    // tracked source tree.
+    ".claude/**",
   ]),
 ]);
 

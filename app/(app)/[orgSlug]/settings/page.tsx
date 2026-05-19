@@ -1,4 +1,10 @@
 import {
+  deleteSsoConfig,
+  saveOidcSsoConfig,
+  saveSamlSsoConfig,
+  toggleSsoEnforcement,
+} from "@/app/actions/sso";
+import {
   cancelOrganisationInvitation,
   inviteOrganisationUser,
   issuePasswordResetLink,
@@ -14,10 +20,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScimTokenCard } from "@/components/settings/scim-token-card";
+import { Textarea } from "@/components/ui/textarea";
 import { requireOrganisationForSlug } from "@/lib/auth/organisation";
 import { openTotpSecret } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
-import { organisationInvitations, organisations, users, verifications } from "@/lib/db/schema";
+import { organisationInvitations, organisations, ssoConfigurations, users, verifications } from "@/lib/db/schema";
 import { buildCampaignReportAddress, buildOrganisationReportAddress } from "@/lib/email/reporting";
 import { and, desc, eq, sql } from "drizzle-orm";
 
@@ -93,6 +100,22 @@ export default async function SettingsPage({
       },
     ]),
   );
+  const [ssoConfig] = await db
+    .select({
+      id: ssoConfigurations.id,
+      kind: ssoConfigurations.kind,
+      oidcIssuerUrl: ssoConfigurations.oidcIssuerUrl,
+      oidcClientId: ssoConfigurations.oidcClientId,
+      hasOidcSecret: sql<boolean>`${ssoConfigurations.oidcClientSecretEncrypted} is not null`,
+      samlEntityId: ssoConfigurations.samlEntityId,
+      samlAcsUrl: ssoConfigurations.samlAcsUrl,
+      samlIdpMetadata: ssoConfigurations.samlIdpMetadata,
+      enforceSso: ssoConfigurations.enforceSso,
+    })
+    .from(ssoConfigurations)
+    .where(eq(ssoConfigurations.organisationId, organisation.id))
+    .limit(1);
+  const ssoRedirectUri = `${appUrl}/api/auth/oauth2/callback/oidc-${organisation.id}`;
 
   return (
     <div className="space-y-6">
@@ -295,6 +318,155 @@ export default async function SettingsPage({
         issuedAt={scimState?.scimTokenIssuedAt ?? null}
       />
 
+      <div className="rounded-lg border border-border bg-card p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h2 className="font-medium">Single sign-on</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+              Configure SAML 2.0 or OIDC identity. OIDC is wired end-to-end today; SAML metadata is captured here and the assertion handler ships in a follow-up.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant={ssoConfig ? "default" : "outline"}>
+              {ssoConfig ? `${ssoConfig.kind.toUpperCase()} configured` : "Not configured"}
+            </Badge>
+            {ssoConfig ? (
+              <Badge variant={ssoConfig.enforceSso ? "default" : "outline"}>
+                {ssoConfig.enforceSso ? "SSO enforced" : "SSO optional"}
+              </Badge>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-5 rounded-lg border border-border bg-[var(--collie-cloud)] p-3 text-xs">
+          <p className="font-medium uppercase text-muted-foreground">OIDC redirect URI (register this with your IdP)</p>
+          <p className="mt-2 break-all font-mono">{ssoRedirectUri}</p>
+        </div>
+
+        <form action={saveOidcSsoConfig} className="mt-5 grid gap-4 md:grid-cols-2">
+          <input type="hidden" name="orgSlug" value={orgSlug} />
+          <div className="space-y-2 md:col-span-2">
+            <Label htmlFor="oidc-issuer-url">OIDC issuer URL</Label>
+            <Input
+              id="oidc-issuer-url"
+              name="issuerUrl"
+              type="url"
+              placeholder="https://login.microsoftonline.com/<tenant-id>/v2.0"
+              defaultValue={ssoConfig?.kind === "oidc" ? (ssoConfig.oidcIssuerUrl ?? "") : ""}
+              required
+            />
+            <p className="text-xs text-muted-foreground">
+              We fetch the discovery document at <span className="font-mono">{`<issuer>/.well-known/openid-configuration`}</span>.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="oidc-client-id">Client ID</Label>
+            <Input
+              id="oidc-client-id"
+              name="clientId"
+              defaultValue={ssoConfig?.kind === "oidc" ? (ssoConfig.oidcClientId ?? "") : ""}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="oidc-client-secret">Client secret</Label>
+            <Input
+              id="oidc-client-secret"
+              name="clientSecret"
+              type="password"
+              placeholder={ssoConfig?.hasOidcSecret ? "•••••• (leave blank to keep current)" : ""}
+              required={!ssoConfig?.hasOidcSecret}
+            />
+          </div>
+          <div className="flex items-center gap-2 md:col-span-2">
+            <input
+              id="oidc-enforce"
+              type="checkbox"
+              name="enforceSso"
+              value="true"
+              defaultChecked={ssoConfig?.kind === "oidc" && ssoConfig.enforceSso}
+              className="size-4 rounded border-input"
+            />
+            <Label htmlFor="oidc-enforce" className="text-sm font-normal">
+              Require SSO for sign-in (blocks password sign-in for users in this organisation)
+            </Label>
+          </div>
+          <div className="md:col-span-2">
+            <Button type="submit">Save OIDC configuration</Button>
+          </div>
+        </form>
+
+        <div className="mt-8 border-t border-border pt-5">
+          <h3 className="text-sm font-medium">SAML 2.0 (assertion handler shipping next)</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Capture your IdP metadata so we can scaffold the per-tenant ACS endpoint. Tenants that need SSO today should use the OIDC tab above.
+          </p>
+          <form action={saveSamlSsoConfig} className="mt-3 grid gap-4 md:grid-cols-2">
+            <input type="hidden" name="orgSlug" value={orgSlug} />
+            <div className="space-y-2">
+              <Label htmlFor="saml-entity-id">SP entity ID</Label>
+              <Input
+                id="saml-entity-id"
+                name="entityId"
+                defaultValue={ssoConfig?.kind === "saml" ? (ssoConfig.samlEntityId ?? "") : ""}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="saml-acs-url">ACS URL</Label>
+              <Input
+                id="saml-acs-url"
+                name="acsUrl"
+                type="url"
+                defaultValue={ssoConfig?.kind === "saml" ? (ssoConfig.samlAcsUrl ?? "") : ""}
+                required
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="saml-idp-metadata">IdP metadata (URL or XML)</Label>
+              <Textarea
+                id="saml-idp-metadata"
+                name="idpMetadata"
+                rows={5}
+                defaultValue={ssoConfig?.kind === "saml" ? (ssoConfig.samlIdpMetadata ?? "") : ""}
+                required
+              />
+            </div>
+            <div className="flex items-center gap-2 md:col-span-2">
+              <input
+                id="saml-enforce"
+                type="checkbox"
+                name="enforceSso"
+                value="true"
+                defaultChecked={ssoConfig?.kind === "saml" && ssoConfig.enforceSso}
+                className="size-4 rounded border-input"
+              />
+              <Label htmlFor="saml-enforce" className="text-sm font-normal">
+                Require SSO for sign-in (active once the SAML assertion handler ships)
+              </Label>
+            </div>
+            <div className="md:col-span-2">
+              <Button type="submit" variant="outline">Save SAML metadata</Button>
+            </div>
+          </form>
+        </div>
+
+        {ssoConfig ? (
+          <div className="mt-6 flex flex-wrap gap-2 border-t border-border pt-4">
+            <form action={toggleSsoEnforcement}>
+              <input type="hidden" name="orgSlug" value={orgSlug} />
+              <input type="hidden" name="enforce" value={ssoConfig.enforceSso ? "false" : "true"} />
+              <Button type="submit" variant="outline">
+                {ssoConfig.enforceSso ? "Disable SSO enforcement" : "Enforce SSO for sign-in"}
+              </Button>
+            </form>
+            <form action={deleteSsoConfig}>
+              <input type="hidden" name="orgSlug" value={orgSlug} />
+              <Button type="submit" variant="outline">Remove SSO configuration</Button>
+            </form>
+          </div>
+        ) : null}
+      </div>
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>

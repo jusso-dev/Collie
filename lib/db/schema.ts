@@ -67,6 +67,7 @@ export const assignmentSource = pgEnum("assignment_source", [
   "manual",
 ]);
 export const sendingTransport = pgEnum("sending_transport", ["resend", "smtp"]);
+export const ssoKind = pgEnum("sso_kind", ["oidc", "saml"]);
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -446,6 +447,26 @@ export const auditLog = pgTable(
     index("audit_log_org_created_idx").on(table.organisationId, table.createdAt.desc()),
     index("audit_log_resource_idx").on(table.resourceType, table.resourceId),
   ],
+);
+
+export const ssoConfigurations = pgTable(
+  "sso_configurations",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    organisationId: text("organisation_id")
+      .notNull()
+      .references(() => organisations.id, { onDelete: "cascade" }),
+    kind: ssoKind("kind").notNull(),
+    oidcIssuerUrl: text("oidc_issuer_url"),
+    oidcClientId: text("oidc_client_id"),
+    oidcClientSecretEncrypted: text("oidc_client_secret_encrypted"),
+    samlEntityId: text("saml_entity_id"),
+    samlAcsUrl: text("saml_acs_url"),
+    samlIdpMetadata: text("saml_idp_metadata"),
+    enforceSso: boolean("enforce_sso").default(false).notNull(),
+    ...timestamps,
+  },
+  (table) => [uniqueIndex("sso_configurations_org_idx").on(table.organisationId)],
 );
 
 export const organisationsRelations = relations(organisations, ({ many }) => ({
