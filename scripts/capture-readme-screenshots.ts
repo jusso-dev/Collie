@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+import { sealTotpSecret } from "@/lib/auth/totp";
 import { db, sql as dbSql } from "@/lib/db/client";
 import {
   campaignTargets,
@@ -209,7 +210,7 @@ async function seedProductData(): Promise<SeedResult> {
   await db
     .update(organisations)
     .set({
-      resendApiKeyEncrypted: "re_readme_capture_fake_key",
+      resendApiKeyEncrypted: sealTotpSecret("re_readme_capture_fake_key"),
       senderFromAddress: "Collie Training <training@example.test>",
       updatedAt: new Date(),
     })
