@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 
+import { detectAppleMailPrivacyProtection, pickClientIp } from "@/lib/tracking/bot-detection";
 import { recordTrackingEvent } from "@/lib/tracking/record-event";
 
 const transparentGif = Uint8Array.from([
@@ -15,12 +16,24 @@ export async function GET(
   const trackingToken = token.join("/").replace(/\.gif$/, "");
   const source = request.nextUrl.searchParams.get("source")?.slice(0, 64) ?? "email_pixel";
 
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  const userAgentValue = request.headers.get("user-agent");
+  const ip = pickClientIp(forwardedFor) ?? pickClientIp(request.headers.get("x-real-ip"));
+  const mpp = detectAppleMailPrivacyProtection({ userAgent: userAgentValue, ip });
+
   await recordTrackingEvent({
     token: trackingToken,
     eventType: "opened",
-    ipAddress: request.headers.get("x-forwarded-for"),
-    userAgent: request.headers.get("user-agent"),
+    ipAddress: forwardedFor,
+    userAgent: userAgentValue,
     metadata: { source },
+    suppressionDecision: () =>
+      mpp.unverified
+        ? {
+            suppress: true,
+            metadataPatch: { unverified: true, suppressionReason: mpp.reason },
+          }
+        : { suppress: false },
   });
 
   return new Response(transparentGif, {

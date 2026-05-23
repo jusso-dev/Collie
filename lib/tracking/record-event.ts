@@ -12,12 +12,31 @@ function appUrl() {
   return (process.env.NEXT_PUBLIC_APP_URL || process.env.BETTER_AUTH_URL || "http://localhost:3000").replace(/\/$/, "");
 }
 
+type CampaignTargetRow = NonNullable<
+  Awaited<ReturnType<typeof db.query.campaignTargets.findFirst>>
+>;
+
+export type EventSuppressionDecision = {
+  suppress: boolean;
+  metadataPatch?: Record<string, unknown>;
+};
+
 export async function recordTrackingEvent(input: {
   token: string;
   eventType: EventType;
   ipAddress?: string | null;
   userAgent?: string | null;
   metadata?: Record<string, unknown>;
+  /**
+   * Called after the campaign target is loaded but before any writes.
+   * When the returned `suppress` is true, the event row is still
+   * inserted (so the bot/MPP hit stays visible for forensics) but
+   * `campaignTargets.openedAt` / `clickedAt` / etc. are NOT updated and
+   * the SIEM/SOAR push is skipped. Used by the pixel and click routes
+   * to keep Apple MPP prefetches and security-gateway scanners out of
+   * dashboard counts. See `lib/tracking/bot-detection.ts`.
+   */
+  suppressionDecision?: (target: CampaignTargetRow) => EventSuppressionDecision;
 }) {
   try {
     const now = new Date();
@@ -29,6 +48,12 @@ export async function recordTrackingEvent(input: {
       return null;
     }
 
+    const decision = input.suppressionDecision?.(target) ?? { suppress: false };
+    const mergedMetadata = {
+      ...(input.metadata ?? {}),
+      ...(decision.metadataPatch ?? {}),
+    };
+
     const [event] = await db
       .insert(events)
       .values({
@@ -36,13 +61,14 @@ export async function recordTrackingEvent(input: {
         eventType: input.eventType,
         ipAddress: input.ipAddress,
         userAgent: input.userAgent,
-        metadata: input.metadata ?? {},
+        metadata: mergedMetadata,
         createdAt: now,
       })
       .returning({ id: events.id });
 
-    const timestampUpdate =
-      input.eventType === "opened"
+    const timestampUpdate = decision.suppress
+      ? null
+      : input.eventType === "opened"
         ? { openedAt: target.openedAt ?? now }
         : input.eventType === "clicked"
           ? { clickedAt: target.clickedAt ?? now }
@@ -83,7 +109,7 @@ export async function recordTrackingEvent(input: {
       }
     }
 
-    if (event) {
+    if (event && !decision.suppress) {
       try {
         await enqueueSimulationEventPush(event.id);
       } catch (error) {
