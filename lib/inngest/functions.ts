@@ -7,6 +7,7 @@ import {
   sendCampaignById,
   sendCampaignTargetById,
 } from "@/lib/campaigns/send-campaign";
+import { purgeExpiredAuditLogs } from "@/lib/audit/purge";
 import { runEventRetention } from "@/lib/compliance/event-retention";
 import { inngest } from "@/lib/inngest/client";
 import { deliverSiemSoarDelivery, listDueSiemSoarDeliveryIds } from "@/lib/integrations/siem-soar";
@@ -221,6 +222,18 @@ export const eventRetentionSweep = inngest.createFunction(
   },
 );
 
+export const auditLogRetentionPurge = inngest.createFunction(
+  {
+    id: "audit-log-retention-purge",
+    name: "Compliance: audit log retention purge",
+    retries: 1,
+    triggers: [{ cron: "TZ=Australia/Sydney 0 3 * * *" }],
+  },
+  async ({ step }) => {
+    return step.run("purge-expired-audit-rows", async () => purgeExpiredAuditLogs());
+  },
+);
+
 export const siemSoarDeliver = inngest.createFunction(
   {
     id: "siem-soar-deliver",
@@ -288,6 +301,7 @@ export const functions = [
   campaignSendTarget,
   riskRecalculateScores,
   eventRetentionSweep,
+  auditLogRetentionPurge,
   siemSoarDeliver,
   siemSoarSweepDueDeliveries,
 ];
