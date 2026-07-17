@@ -10,4 +10,11 @@ export async function register() {
   await ensureSsoCacheLoaded().catch((error) => {
     console.error("Failed to warm SSO cache during instrumentation", error);
   });
+
+  // Seal any plaintext Resend API keys carried over from before AES-GCM at-rest
+  // encryption shipped. Idempotent — rows already sealed are skipped.
+  const { backfillSealedResendKeys } = await import("./lib/auth/secret-backfill");
+  await backfillSealedResendKeys().catch((error) => {
+    console.error("Failed to backfill sealed resend keys during instrumentation", error);
+  });
 }
