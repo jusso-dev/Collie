@@ -1,19 +1,20 @@
 import { NextRequest, userAgent } from "next/server";
 
+import { detectBotClick } from "@/lib/tracking/bot-detection";
 import { clickMetadata, clickSourceFromSearchParams } from "@/lib/tracking/click-metadata";
 import { renderLandingPageForToken } from "@/lib/tracking/render-landing-page";
 import { recordTrackingEvent } from "@/lib/tracking/record-event";
 
-export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
-  const { token } = await params;
+async function recordClick(request: NextRequest, token: string, method: string) {
   const source = clickSourceFromSearchParams(request.nextUrl.searchParams);
   const agent = userAgent(request);
+  const userAgentValue = request.headers.get("user-agent");
 
-  const target = await recordTrackingEvent({
+  return recordTrackingEvent({
     token,
     eventType: "clicked",
     ipAddress: request.headers.get("x-forwarded-for"),
-    userAgent: request.headers.get("user-agent"),
+    userAgent: userAgentValue,
     metadata: clickMetadata({
       source,
       headers: request.headers,
@@ -30,7 +31,38 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         isBot: agent.isBot,
       },
     }),
+    suppressionDecision: (campaignTarget) => {
+      const bot = detectBotClick({
+        userAgent: userAgentValue,
+        method,
+        isBot: agent.isBot,
+        sentAt: campaignTarget.sentAt,
+      });
+      if (!bot.bot) return { suppress: false };
+      return {
+        suppress: true,
+        metadataPatch: { bot: true, suppressionReason: bot.reason },
+      };
+    },
   });
+}
+
+export async function HEAD(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
+  const { token } = await params;
+  const target = await recordClick(request, token, "HEAD");
+
+  return new Response(null, {
+    status: target ? 200 : 404,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
+  const { token } = await params;
+  const target = await recordClick(request, token, request.method);
 
   if (!target) {
     return new Response("This training link is no longer active.", {

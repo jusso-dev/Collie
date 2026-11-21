@@ -23,7 +23,7 @@ export function SignInForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const next = searchParams.get("next");
-  const callbackURL = next?.startsWith("/") ? next : "/dashboard";
+  const callbackURL = next?.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
   const [serverError, setServerError] = useState<string | null>(null);
   const [ssoBusy, setSsoBusy] = useState(false);
   const {
@@ -49,7 +49,11 @@ export function SignInForm() {
       }
       if (result.kind === "saml") {
         const params = new URLSearchParams({ next: callbackURL });
-        window.location.assign(`/api/sso/saml/${encodeURIComponent(result.organisationSlug)}/login?${params.toString()}`);
+        const samlLoginUrl = new URL(
+          `/api/sso/saml/${encodeURIComponent(result.organisationSlug)}/login?${params.toString()}`,
+          window.location.origin,
+        );
+        window.location.assign(samlLoginUrl.toString());
         return;
       }
       const oauthResult = await signIn.oauth2({ providerId: result.providerId, callbackURL });

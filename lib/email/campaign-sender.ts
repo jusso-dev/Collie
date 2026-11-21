@@ -296,12 +296,11 @@ export type OrganisationTransportConfig = {
 
 function decryptIfSet(sealed: string | null): string | null {
   if (!sealed) return null;
-  try {
-    return openTotpSecret(sealed);
-  } catch (error) {
-    if (/^re_[A-Za-z0-9_-]+$/.test(sealed)) return sealed;
-    throw error;
-  }
+  // No plaintext fallback: if `openTotpSecret` throws, the AES-GCM auth tag
+  // failed or the column is not sealed. Either way we fail closed rather than
+  // hand the caller a credential we cannot vouch for. Plaintext rows are
+  // sealed on boot by `backfillSealedResendKeys` (see instrumentation.ts).
+  return openTotpSecret(sealed);
 }
 
 export function getTransportForOrganisation(org: OrganisationTransportConfig): CampaignTransport {
