@@ -100,6 +100,9 @@ export function sealTotpSecret(secret: string): string {
 
 export function openTotpSecret(sealed: string): string {
   const buffer = Buffer.from(sealed, "base64");
+  if (buffer.length < 28) {
+    throw new Error("Sealed secret payload is malformed.");
+  }
   const iv = buffer.subarray(0, 12);
   const authTag = buffer.subarray(12, 28);
   const cipherText = buffer.subarray(28);

@@ -87,7 +87,7 @@ export async function recordTrackingEvent(input: {
         .where(eq(campaignTargets.id, target.id));
     }
 
-    if (input.eventType === "trained") {
+    if (!decision.suppress && input.eventType === "trained") {
       await db
         .update(employees)
         .set({ lastTrainedAt: target.trainingCompletedAt ?? now, updatedAt: now })

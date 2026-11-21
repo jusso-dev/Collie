@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { sealTotpSecret } from "@/lib/auth/totp";
 import { db } from "@/lib/db/client";
@@ -44,12 +44,20 @@ export async function backfillSealedResendKeys(): Promise<ResendKeyBackfillResul
     }
     try {
       const sealed = sealTotpSecret(row.resendApiKeyEncrypted);
-      await db
+      const updated = await db
         .update(organisations)
-        .set({ resendApiKeyEncrypted: sealed })
-        .where(eq(organisations.id, row.id));
-      result.sealed += 1;
-      console.log(`[secret-backfill] sealed plaintext resend key for org=${row.id}`);
+        .set({ resendApiKeyEncrypted: sealed, updatedAt: new Date() })
+        .where(
+          and(
+            eq(organisations.id, row.id),
+            eq(organisations.resendApiKeyEncrypted, row.resendApiKeyEncrypted),
+          ),
+        )
+        .returning({ id: organisations.id });
+      if (updated.length > 0) {
+        result.sealed += 1;
+        console.log(`[secret-backfill] sealed plaintext resend key for org=${row.id}`);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       result.errors.push(`${row.id}: ${message}`);

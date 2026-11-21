@@ -336,7 +336,7 @@ export async function runTargetSend(input: {
       : { status: "skipped", reason: "voice_no_phone" };
   }
 
-  if (channel !== "email" && channel !== "sms" && channel !== "attachment" && channel !== "usb") {
+  if (channel !== "email" && channel !== "qr" && channel !== "sms" && channel !== "attachment" && channel !== "usb") {
     await markTargetSkipped({
       targetId: target.id,
       now,

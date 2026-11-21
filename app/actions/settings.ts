@@ -80,8 +80,8 @@ const sendingSettingsSchema = z
   })
   .superRefine((value, ctx) => {
     if (value.transport === "resend") {
-      if (!value.resendApiKey || value.resendApiKey.length < 8) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["resendApiKey"], message: "Enter a Resend API key." });
+      if (value.resendApiKey && value.resendApiKey.length < 8) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["resendApiKey"], message: "Enter a valid Resend API key." });
       }
       if (!value.senderFromAddress) {
         ctx.addIssue({
@@ -190,7 +190,9 @@ export async function saveSendingSettings(formData: FormData) {
   if (data.transport === "resend") {
     if (data.resendApiKey) {
       updates.resendApiKeyEncrypted = sealTotpSecret(data.resendApiKey);
-    } else if (organisation.resendApiKeyEncrypted && /^re_[A-Za-z0-9_-]+$/.test(organisation.resendApiKeyEncrypted)) {
+    } else if (!organisation.resendApiKeyEncrypted) {
+      throw new Error("Enter a Resend API key.");
+    } else if (/^re_[A-Za-z0-9_-]+$/.test(organisation.resendApiKeyEncrypted)) {
       updates.resendApiKeyEncrypted = sealTotpSecret(organisation.resendApiKeyEncrypted);
     }
   } else {

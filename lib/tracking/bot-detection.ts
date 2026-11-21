@@ -52,6 +52,7 @@ const SCANNER_AND_LIBRARY_PATTERNS = [
 
 const APPLE_MAIL_UA_PATTERN =
   /\bAppleWebKit\/[0-9.]+\s+\(KHTML, like Gecko\)\s*$/i;
+const APPLE_MPP_BARE_MOZILLA_UA_PATTERN = /^Mozilla\/5\.0$/i;
 
 /**
  * Conservative list of iCloud Private Relay egress CIDRs published by
@@ -72,8 +73,14 @@ function parseCidrV4(cidr: string): readonly [number, number] {
   const [base, prefixStr] = cidr.split("/");
   const prefix = Number(prefixStr);
   const octets = base.split(".").map((part) => Number(part));
-  if (octets.length !== 4 || octets.some((value) => Number.isNaN(value))) {
-    return [0, 0];
+  if (
+    !Number.isInteger(prefix) ||
+    prefix < 0 ||
+    prefix > 32 ||
+    octets.length !== 4 ||
+    octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)
+  ) {
+    throw new Error(`Invalid IPv4 CIDR: ${cidr}`);
   }
   const ipInt =
     ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
@@ -83,21 +90,47 @@ function parseCidrV4(cidr: string): readonly [number, number] {
 
 function ipv4ToInt(ip: string): number | null {
   const parts = ip.split(".").map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((value) => Number.isNaN(value) || value < 0 || value > 255)) {
+  if (parts.length !== 4 || parts.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
     return null;
   }
   return (((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0);
 }
 
+function normalizeCandidateIp(raw: string): string | null {
+  let candidate = raw.trim();
+  if (!candidate) return null;
+
+  // Handle bracketed IPv6 with optional port: [::ffff:17.1.2.3]:443
+  if (candidate.startsWith("[")) {
+    const endBracket = candidate.indexOf("]");
+    if (endBracket === -1) return null;
+    candidate = candidate.slice(1, endBracket);
+  } else if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(candidate)) {
+    // Strip port from IPv4:port
+    candidate = candidate.slice(0, candidate.lastIndexOf(":"));
+  }
+
+  // Unwrap IPv4-mapped IPv6 addresses (e.g. ::ffff:172.224.224.1)
+  if (/^::ffff:/i.test(candidate)) {
+    const mapped = candidate.slice(7);
+    if (isIP(mapped) === 4) {
+      return mapped;
+    }
+  }
+
+  return isIP(candidate) ? candidate : null;
+}
+
 export function pickClientIp(forwarded: string | null | undefined): string | null {
   if (!forwarded) return null;
-  const first = forwarded.split(",")[0]?.trim();
-  return first && isIP(first) ? first : null;
+  const first = forwarded.split(",")[0];
+  return first ? normalizeCandidateIp(first) : null;
 }
 
 export function isApplePrivacyRelayIp(ip: string | null | undefined): boolean {
-  if (!ip || isIP(ip) !== 4) return false;
-  const value = ipv4ToInt(ip);
+  const normalized = ip ? normalizeCandidateIp(ip) : null;
+  if (!normalized || isIP(normalized) !== 4) return false;
+  const value = ipv4ToInt(normalized);
   if (value === null) return false;
   for (const [base, mask] of APPLE_PRIVATE_RELAY_RANGES_V4) {
     if ((value & mask) === base) return true;
@@ -113,12 +146,17 @@ export type MppDetection = {
 export function detectAppleMailPrivacyProtection(input: {
   userAgent: string | null | undefined;
   ip: string | null | undefined;
+  method?: string | undefined;
 }): MppDetection {
-  const ua = input.userAgent ?? "";
+  const method = (input.method ?? "GET").toUpperCase();
+  if (method === "HEAD") {
+    return { unverified: true, reason: "head_request" };
+  }
+  const ua = (input.userAgent ?? "").trim();
   if (isApplePrivacyRelayIp(input.ip)) {
     return { unverified: true, reason: "apple_private_relay_ip" };
   }
-  if (APPLE_MAIL_UA_PATTERN.test(ua)) {
+  if (APPLE_MAIL_UA_PATTERN.test(ua) || APPLE_MPP_BARE_MOZILLA_UA_PATTERN.test(ua)) {
     return { unverified: true, reason: "apple_mail_ua" };
   }
   return { unverified: false, reason: null };

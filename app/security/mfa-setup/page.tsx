@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import Image from "next/image";
 import { redirect } from "next/navigation";
 
 import { beginMfaSetup, confirmMfaSetup } from "@/app/actions/mfa";
@@ -10,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { getSession } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
 import { users } from "@/lib/db/schema";
+import { qrDataUriFor } from "@/lib/email/qr";
 
 async function ensureEnrollment(): Promise<{ secret: string; otpauthUrl: string; mfaRequired: boolean }> {
   const session = await getSession();
@@ -37,7 +39,12 @@ async function ensureEnrollment(): Promise<{ secret: string; otpauthUrl: string;
 
 export default async function MfaSetupPage() {
   const { secret, otpauthUrl, mfaRequired } = await ensureEnrollment();
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpauthUrl)}`;
+  let qrDataUri: string | null = null;
+  try {
+    qrDataUri = qrDataUriFor(otpauthUrl);
+  } catch {
+    qrDataUri = null;
+  }
 
   return (
     <div className="mx-auto flex min-h-screen max-w-xl items-center px-6 py-12">
@@ -55,8 +62,13 @@ export default async function MfaSetupPage() {
         <CardContent className="space-y-6">
           <div className="grid gap-4 sm:grid-cols-[200px_1fr] sm:items-start">
             <div className="rounded-lg border border-border bg-card p-2">
-              {}
-              <img src={qrUrl} alt="MFA enrolment QR code" width={200} height={200} />
+              {qrDataUri ? (
+                <Image src={qrDataUri} alt="MFA enrolment QR code" width={200} height={200} unoptimized />
+              ) : (
+                <div className="flex h-[200px] w-[200px] items-center justify-center p-3 text-center text-xs text-muted-foreground">
+                  Use the manual entry secret to add Collie to your authenticator app.
+                </div>
+              )}
             </div>
             <div className="space-y-3 text-sm">
               <div>

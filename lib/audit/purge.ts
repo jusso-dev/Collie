@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 
+import { DEFAULT_EVENT_METADATA_RETENTION_DAYS } from "@/lib/compliance/event-retention";
 import { db } from "@/lib/db/client";
 import { auditLog, organisations } from "@/lib/db/schema";
 
@@ -14,6 +15,7 @@ export type AuditPurgeOrgResult = {
   cutoff: string;
   deleted: number;
   batches: number;
+  capped: boolean;
 };
 
 export type AuditPurgeRunResult = {
@@ -40,7 +42,8 @@ async function deleteBatch(orgId: string, cutoff: Date, batchSize: number): Prom
     ),
     deleted as (
       delete from ${auditLog}
-      where ${auditLog.id} in (select id from target_rows)
+      where ${auditLog.organisationId} = ${orgId}
+        and ${auditLog.id} in (select id from target_rows)
       returning 1
     )
     select count(*)::int as count from deleted
@@ -53,18 +56,30 @@ export async function purgeAuditLogsForOrganisation(
   retentionDays: number,
   options: { batchSize?: number; now?: Date } = {},
 ): Promise<AuditPurgeOrgResult> {
+  if (!Number.isInteger(retentionDays) || retentionDays <= 0) {
+    throw new RangeError(`retentionDays must be a positive integer (received ${String(retentionDays)})`);
+  }
+
   const batchSize = options.batchSize ?? AUDIT_PURGE_DEFAULT_BATCH_SIZE;
+  if (!Number.isInteger(batchSize) || batchSize <= 0) {
+    throw new RangeError(`batchSize must be a positive integer (received ${String(batchSize)})`);
+  }
+
   const now = options.now ?? new Date();
   const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000);
 
   let batches = 0;
   let deleted = 0;
+  let capped = false;
 
   while (batches < AUDIT_PURGE_MAX_BATCHES_PER_ORG) {
     const removed = await deleteBatch(orgId, cutoff, batchSize);
     batches += 1;
     deleted += removed;
     if (removed < batchSize) break;
+    if (batches === AUDIT_PURGE_MAX_BATCHES_PER_ORG) {
+      capped = true;
+    }
   }
 
   return {
@@ -73,6 +88,7 @@ export async function purgeAuditLogsForOrganisation(
     cutoff: cutoff.toISOString(),
     deleted,
     batches,
+    capped,
   };
 }
 
@@ -92,11 +108,21 @@ export async function purgeExpiredAuditLogs(
 
   for (const org of orgs) {
     try {
-      const result = await purgeAuditLogsForOrganisation(org.id, org.retentionDays, options);
+      const effectiveRetentionDays =
+        typeof org.retentionDays === "number" && Number.isInteger(org.retentionDays) && org.retentionDays > 0
+          ? org.retentionDays
+          : DEFAULT_EVENT_METADATA_RETENTION_DAYS;
+      if (effectiveRetentionDays !== org.retentionDays) {
+        console.warn(
+          `[audit-purge] org=${org.id} has invalid audit_retention_days=${String(org.retentionDays)}; falling back to ${effectiveRetentionDays}d`,
+        );
+      }
+
+      const result = await purgeAuditLogsForOrganisation(org.id, effectiveRetentionDays, options);
       perOrg.push(result);
       totalDeleted += result.deleted;
       console.log(
-        `[audit-purge] org=${org.id} retention=${org.retentionDays}d cutoff=${result.cutoff} deleted=${result.deleted} batches=${result.batches}`,
+        `[audit-purge] org=${org.id} retention=${effectiveRetentionDays}d cutoff=${result.cutoff} deleted=${result.deleted} batches=${result.batches}${result.capped ? " capped=true" : ""}`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

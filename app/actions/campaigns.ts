@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import crypto from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect, RedirectType } from "next/navigation";
@@ -215,9 +215,10 @@ export async function createCampaign(formData: FormData) {
     throw new Error("Choose a landing page before creating the campaign.");
   }
 
-  const exclusionFilters = and(
-    or(eq(employees.excluded, false), sql`${employees.excluded} is null`),
-    or(isNull(employees.excludedUntil), gt(employees.excludedUntil, sql`now()`)),
+  const exclusionFilters = or(
+    eq(employees.excluded, false),
+    sql`${employees.excluded} is null`,
+    and(isNotNull(employees.excludedUntil), lte(employees.excludedUntil, sql`now()`)),
   );
 
   let targetEmployees = await db
